@@ -1,75 +1,649 @@
+"""
+ChatGPT Web2API Proxy — Single-file FastAPI server.
+
+Routes:
+  POST /v1/chat/completions  → conversation node-tree (supports text + gpt-image-2)
+  POST /v1/responses         → codex/responses (standard OpenAI Responses format)
+  POST /v1/images/generations → same as /v1/chat/completions image path
+  GET  /v1/models             → list supported models
+  GET  /ping                  → health check (no auth)
+
+Requires env vars: SESSION_TOKEN_0, SESSION_TOKEN_1, OAI_DEVICE_ID, API_KEY
+"""
+
 import os
+import json
+import uuid
+import asyncio
+import logging
+import time
+from typing import Optional
+
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse
-from curl_cffi import requests
+from fastapi.responses import StreamingResponse, JSONResponse
+from pydantic import BaseModel
+from curl_cffi import requests as curl_requests
+from dotenv import load_dotenv
 
 from token_manager import token_manager
+from pow_solver import generate_requirements_token, solve_pow
 
-app = FastAPI(title="ChatGPT Proxy (PaaS Edition)")
+load_dotenv()
+
+# ── Logging ─────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("proxy")
+
+# ── Constants ───────────────────────────────────────────────────────────
+BASE_URL = "https://chatgpt.com/backend-api"
+CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_USER_AGENT = "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)"
+CODEX_ORIGINATOR = "codex-tui"
+WEB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
+)
+DEFAULT_MODEL = "gpt-5.4-mini"
+IMAGE_MODELS = {"gpt-image-1", "gpt-image-2"}
+
+# ── API Key 鉴权 ───────────────────────────────────────────────────────
+API_KEY = os.getenv("API_KEY", "")
+
+# 不需要鉴权的白名单路径
+AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/"}
+
+
+# ── App ─────────────────────────────────────────────────────────────────
+app = FastAPI(title="ChatGPT Web2API Proxy")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """
+    API Key 鉴权中间件。
+    支持三种方式传入密钥（兼容 OpenAI SDK 和各类客户端）：
+      1. Authorization: Bearer sk-xxxx
+      2. X-API-Key: sk-xxxx
+      3. 查询参数 ?key=sk-xxxx  （仅 SSE/WebSocket 不方便设 header 时使用）
+    """
+    path = request.url.path
+
+    # 白名单路径免鉴权
+    if path in AUTH_WHITELIST or path.startswith("/docs") or path.startswith("/openapi"):
+        return await call_next(request)
+
+    # 如果没有配置 API_KEY，跳过鉴权（开发模式）
+    if not API_KEY:
+        return await call_next(request)
+
+    # 提取客户端传来的 key
+    client_key = ""
+
+    # 方式 1: Authorization: Bearer <key>
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        client_key = auth_header[7:].strip()
+
+    # 方式 2: X-API-Key
+    if not client_key:
+        client_key = request.headers.get("x-api-key", "").strip()
+
+    # 方式 3: 查询参数 ?key=
+    if not client_key:
+        client_key = request.query_params.get("key", "").strip()
+
+    # 验证
+    if not client_key or client_key != API_KEY:
+        log.warning(f"[auth] rejected {request.method} {path} — invalid or missing API key")
+        return JSONResponse(
+            status_code=401,
+            content={
+                "error": {
+                    "message": "Invalid API key. Provide it via 'Authorization: Bearer <key>' or 'X-API-Key: <key>'.",
+                    "type": "authentication_error",
+                    "code": "invalid_api_key",
+                }
+            },
+        )
+
+    return await call_next(request)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Token & PoW helpers
+# ══════════════════════════════════════════════════════════════════════════
+
+async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, str]:
+    """Fetch chat-requirements token and solve PoW if needed."""
+    req_token = generate_requirements_token()
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": WEB_USER_AGENT,
+        "oai-device-id": device_id,
+    }
+
+    async with curl_requests.AsyncSession(impersonate="chrome120") as session:
+        resp = await session.post(
+            f"{BASE_URL}/sentinel/chat-requirements",
+            json={"p": req_token},
+            headers=headers,
+        )
+        if resp.status_code != 200:
+            raise Exception(f"chat-requirements failed: {resp.status_code} {resp.text}")
+
+        data = resp.json()
+        chat_token = data.get("token", "")
+        pow_info = data.get("proofofwork", {})
+        proof_token = ""
+
+        if pow_info.get("required"):
+            seed = pow_info["seed"]
+            difficulty = pow_info["difficulty"]
+            log.info(f"[PoW] required, seed={seed[:16]}... difficulty={difficulty}")
+            proof_token = await asyncio.to_thread(solve_pow, seed, difficulty)
+            log.info(f"[PoW] solved, prefix={proof_token[:24]}...")
+
+    return chat_token, proof_token
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Conversation node-tree builder (for image generation via Free account)
+# ══════════════════════════════════════════════════════════════════════════
+
+def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL) -> dict:
+    """Build the node-tree body for /backend-api/conversation."""
+    msg_id = str(uuid.uuid4())
+    return {
+        "action": "next",
+        "messages": [
+            {
+                "id": msg_id,
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [prompt]},
+                "metadata": {
+                    "system_hints": ["picture_v2"],
+                    "serialization_metadata": {"custom_symbol_offsets": []},
+                },
+            }
+        ],
+        "parent_message_id": "client-created-root",
+        "model": model,
+        "timezone_offset_min": 420,
+        "timezone": "America/Los_Angeles",
+        "conversation_mode": {"kind": "primary_assistant"},
+        "enable_message_followups": True,
+        "system_hints": ["picture_v2"],
+        "supports_buffering": True,
+        "supported_encodings": [],
+        "client_contextual_info": {
+            "is_dark_mode": True,
+            "time_since_loaded": 1000,
+            "page_height": 717,
+            "page_width": 1200,
+            "pixel_ratio": 2,
+            "screen_height": 878,
+            "screen_width": 1352,
+            "app_name": "chatgpt.com",
+        },
+        "paragen_cot_summary_display_override": "allow",
+        "force_parallel_switch": "auto",
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Conversation SSE parser — extracts image URLs
+# ══════════════════════════════════════════════════════════════════════════
+
+def _extract_file_id(asset_pointer: str) -> str:
+    if "file-service://" in asset_pointer:
+        return asset_pointer.split("file-service://", 1)[1].split("?")[0]
+    if "sediment://" in asset_pointer:
+        return asset_pointer.split("sediment://", 1)[1].split("?")[0]
+    return ""
+
+
+async def _resolve_image_url(access_token: str, device_id: str,
+                              file_id: str, conversation_id: str) -> str:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": WEB_USER_AGENT,
+        "oai-device-id": device_id,
+    }
+    async with curl_requests.AsyncSession(impersonate="chrome120") as session:
+        resp = await session.get(
+            f"{BASE_URL}/files/{file_id}/download",
+            headers=headers,
+            allow_redirects=False,
+        )
+        if resp.status_code in (301, 302, 303, 307, 308):
+            return resp.headers.get("Location", "")
+        if resp.status_code == 200:
+            try:
+                return resp.json().get("download_url", "")
+            except Exception:
+                pass
+
+        resp2 = await session.get(
+            f"{BASE_URL}/attachments/{file_id}",
+            headers=headers,
+            allow_redirects=False,
+        )
+        if resp2.status_code in (301, 302, 303, 307, 308):
+            return resp2.headers.get("Location", "")
+        if resp2.status_code == 200:
+            try:
+                return resp2.json().get("download_url", "")
+            except Exception:
+                pass
+
+    return ""
+
+
+async def parse_conversation_sse(
+    access_token: str, device_id: str,
+    chunks: list[str], parent_msg_id: str = "",
+) -> list[dict]:
+    images = []
+    conversation_id = ""
+    seen_ids = set()
+
+    for chunk in chunks:
+        if not chunk.startswith("data: "):
+            continue
+        data = chunk[6:].strip()
+        if data == "[DONE]":
+            break
+        if not data.startswith("{"):
+            continue
+
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+
+        cid = event.get("conversation_id", "")
+        if cid:
+            conversation_id = cid
+
+        msg = event.get("message")
+        if not msg:
+            continue
+        if msg.get("id") == parent_msg_id:
+            continue
+
+        author_role = msg.get("author", {}).get("role", "")
+        if author_role in ("user", "system"):
+            continue
+        if msg.get("content", {}).get("content_type") != "multimodal_text":
+            continue
+        if msg.get("status") != "finished_successfully":
+            continue
+
+        for raw_part in msg.get("content", {}).get("parts", []):
+            if isinstance(raw_part, str):
+                continue
+            if raw_part.get("content_type") != "image_asset_pointer":
+                continue
+            asset = raw_part.get("asset_pointer", "")
+            file_id = _extract_file_id(asset)
+            if not file_id or file_id in seen_ids:
+                continue
+            seen_ids.add(file_id)
+
+            dalle_meta = raw_part.get("metadata", {}).get("dalle", {})
+            gen_id = dalle_meta.get("gen_id", "")
+            revised = dalle_meta.get("prompt", "")
+
+            url = await _resolve_image_url(access_token, device_id, file_id, conversation_id)
+            if url:
+                images.append({"url": url, "revised_prompt": revised, "file_id": file_id, "gen_id": gen_id})
+
+    return images
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Image generation core
+# ══════════════════════════════════════════════════════════════════════════
+
+async def _handle_image_via_conversation(
+    prompt: str, model: str, n: int,
+    size: str, quality: str, background: str, response_format: str,
+) -> dict:
+    full_prompt = prompt
+    if size and size not in ("auto", "1024x1024"):
+        full_prompt = f"Generate an image with size {size}. {prompt}"
+    if quality in ("hd", "high"):
+        full_prompt = f"Generate a high-quality, detailed image: {full_prompt}"
+    if background == "transparent":
+        full_prompt += " The image must have a transparent background (PNG with alpha channel)."
+
+    access_token = await token_manager.get_valid_token()
+    device_id = token_manager.device_id
+    chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
+
+    body = build_conversation_body(full_prompt, model=model)
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": WEB_USER_AGENT,
+        "oai-device-id": device_id,
+        "Accept": "text/event-stream",
+        "openai-sentinel-chat-requirements-token": chat_token,
+    }
+    if proof_token:
+        headers["openai-sentinel-proof-token"] = proof_token
+
+    for path in ("/f/conversation", "/conversation"):
+        route_label = path.split("/")[-1]
+        log.info(f"[conv] trying {path}")
+        try:
+            async with curl_requests.AsyncSession(impersonate="chrome120") as session:
+                resp = await session.post(
+                    f"{BASE_URL}{path}",
+                    json=body, headers=headers, stream=True, timeout=300,
+                )
+                if resp.status_code != 200:
+                    err_body = await resp.aread()
+                    log.warning(f"[conv] {route_label} returned {resp.status_code}: {err_body[:512]}")
+                    if resp.status_code in (403, 404) and path == "/f/conversation":
+                        continue
+                    raise Exception(f"{route_label} returned {resp.status_code}")
+
+                chunks = []
+                async for line in resp.aiter_lines():
+                    if line:
+                        decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                        chunks.append(decoded)
+
+                images = await parse_conversation_sse(access_token, device_id, chunks)
+                if images:
+                    return _build_images_response(images[:n], response_format)
+
+                log.warning(f"[conv] {route_label} returned no images, trying next path")
+                if path == "/conversation":
+                    raise Exception("No images generated from either endpoint")
+        except Exception as e:
+            if path == "/conversation":
+                raise
+            log.warning(f"[conv] {route_label} failed: {e}, trying /conversation")
+            continue
+
+    raise Exception("Image generation failed")
+
+
+def _build_images_response(images: list[dict], response_format: str) -> dict:
+    data = []
+    for img in images:
+        item = {"revised_prompt": img.get("revised_prompt", "")}
+        if response_format == "b64_json":
+            item["url"] = img["url"]
+            item["b64_json"] = ""
+        else:
+            item["url"] = img["url"]
+        data.append(item)
+    return {"created": int(time.time()), "data": data}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Route: POST /v1/images/generations
+# ══════════════════════════════════════════════════════════════════════════
+
+class ImageGenRequest(BaseModel):
+    model: str = "gpt-image-2"
+    prompt: str
+    n: int = 1
+    size: str = "auto"
+    quality: str = "auto"
+    background: str = "auto"
+    response_format: str = "url"
+
+
+@app.post("/v1/images/generations")
+async def images_generations(req: ImageGenRequest):
+    log.info(f"[images] model={req.model} size={req.size} prompt={req.prompt[:80]}...")
+    try:
+        return await _handle_image_via_conversation(
+            prompt=req.prompt, model=req.model, n=req.n,
+            size=req.size, quality=req.quality,
+            background=req.background, response_format=req.response_format,
+        )
+    except Exception as e:
+        log.error(f"[images] error: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Route: POST /v1/chat/completions
+# ══════════════════════════════════════════════════════════════════════════
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str | list | None = None
+
+
+class ChatCompletionRequest(BaseModel):
+    model: str = "gpt-4o"
+    messages: list[ChatMessage]
+    stream: bool = False
+    n: int = 1
+    size: str = "auto"
+    quality: str = "auto"
+    background: str = "auto"
+
+
+def _extract_prompt_from_messages(messages: list[ChatMessage]) -> str:
+    parts = []
+    for msg in messages:
+        if msg.role in ("system", "assistant", "tool"):
+            continue
+        if isinstance(msg.content, str):
+            parts.append(msg.content)
+        elif isinstance(msg.content, list):
+            for item in msg.content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                elif isinstance(item, str):
+                    parts.append(item)
+    return "\n\n".join(parts)
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatCompletionRequest):
+    model = req.model.lower()
+
+    # ── Image generation mode ────────────────────────────────────────────
+    if model in IMAGE_MODELS:
+        prompt = _extract_prompt_from_messages(req.messages)
+        if not prompt.strip():
+            raise HTTPException(status_code=400, detail="prompt is required")
+
+        log.info(f"[chat] image mode, model={model}")
+        try:
+            img_resp = await _handle_image_via_conversation(
+                prompt=prompt, model=model, n=req.n,
+                size=req.size, quality=req.quality,
+                background=req.background, response_format="url",
+            )
+            markdown_parts = []
+            for img in img_resp.get("data", []):
+                url = img.get("url", "")
+                if url:
+                    markdown_parts.append(f"![image]({url})")
+            content = "\n\n".join(markdown_parts) if markdown_parts else "Image generation failed."
+
+            return {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": req.model,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content, "images": img_resp.get("data", [])},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
+        except Exception as e:
+            log.error(f"[chat] image error: {e}", exc_info=True)
+            raise HTTPException(status_code=502, detail=str(e))
+
+    # ── Standard text conversation → codex/responses ─────────────────────
+    prompt = _extract_prompt_from_messages(req.messages)
+    access_token = await token_manager.get_valid_token()
+
+    payload = {
+        "model": model,
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+        "stream": req.stream,
+        "store": False,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream" if req.stream else "application/json",
+        "User-Agent": CODEX_USER_AGENT,
+        "Originator": CODEX_ORIGINATOR,
+        "Chatgpt-Account-Id": token_manager.account_id,
+        "Session_id": str(uuid.uuid4()),
+    }
+
+    log.info(f"[chat] text mode, forwarding to codex/responses, stream={req.stream}")
+
+    try:
+        if req.stream:
+            return await _stream_codex_response(payload, headers)
+        else:
+            return await _non_stream_codex_response(payload, headers, req.model)
+    except Exception as e:
+        log.error(f"[chat] codex error: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+async def _stream_codex_response(payload: dict, headers: dict) -> StreamingResponse:
+    async def generate():
+        async with curl_requests.AsyncSession(impersonate="chrome120") as session:
+            resp = await session.post(
+                f"{CODEX_BASE_URL}/responses",
+                json=payload, headers=headers, stream=True, timeout=600,
+            )
+            if resp.status_code != 200:
+                err = await resp.aread()
+                yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                yield f"{decoded}\n\n"
+                if decoded.strip() == "data: [DONE]":
+                    break
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+async def _non_stream_codex_response(payload: dict, headers: dict, model: str) -> dict:
+    async with curl_requests.AsyncSession(impersonate="chrome120") as session:
+        resp = await session.post(
+            f"{CODEX_BASE_URL}/responses",
+            json=payload, headers=headers, timeout=600,
+        )
+        if resp.status_code != 200:
+            err = await resp.aread()
+            raise Exception(f"Codex returned {resp.status_code}: {err.decode()[:500]}")
+        data = resp.json()
+
+    output_text = ""
+    for item in data.get("output", []):
+        if item.get("type") == "message":
+            for part in item.get("content", []):
+                if part.get("type") == "output_text":
+                    output_text += part.get("text", "")
+
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": output_text},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Route: POST /v1/responses  (Codex passthrough)
+# ══════════════════════════════════════════════════════════════════════════
+
+@app.post("/v1/responses")
+async def proxy_codex_responses(request: Request):
+    payload = await request.json()
+    access_token = await token_manager.get_valid_token()
+
+    tools = payload.get("tools", [])
+    has_image_tool = any(t.get("type", "").lower() == "image_generation" for t in tools)
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "User-Agent": CODEX_USER_AGENT,
+        "Originator": CODEX_ORIGINATOR,
+        "Chatgpt-Account-Id": token_manager.account_id,
+        "Session_id": str(uuid.uuid4()),
+        "Connection": "Keep-Alive",
+    }
+
+    log.info(f"[responses] has_image_tool={has_image_tool}, stream={payload.get('stream', False)}")
+
+    if payload.get("stream"):
+        return await _stream_codex_response(payload, headers)
+    else:
+        async with curl_requests.AsyncSession(impersonate="chrome120") as session:
+            resp = await session.post(
+                f"{CODEX_BASE_URL}/responses",
+                json=payload, headers=headers, timeout=600,
+            )
+            if resp.status_code != 200:
+                err = await resp.aread()
+                raise HTTPException(status_code=resp.status_code, detail=err.decode()[:500])
+            return resp.json()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Health & models endpoints (no auth required)
+# ══════════════════════════════════════════════════════════════════════════
 
 @app.get("/ping")
 async def health_check():
-    return {"status": "ok", "message": "PaaS deployment is running"}
+    return {"status": "ok"}
 
-async def forward_request(url: str, payload: dict, token: str, device_id: str):
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-        "oai-device-id": device_id
+
+@app.get("/v1/models")
+async def list_models():
+    return {
+        "object": "list",
+        "data": [
+            {"id": "gpt-image-2", "object": "model", "owned_by": "chatgpt"},
+            {"id": "gpt-image-1", "object": "model", "owned_by": "chatgpt"},
+            {"id": "gpt-4o", "object": "model", "owned_by": "chatgpt"},
+            {"id": "gpt-5.4-mini", "object": "model", "owned_by": "chatgpt"},
+            {"id": "gpt-5.5", "object": "model", "owned_by": "chatgpt"},
+        ],
     }
 
-    async def generate_stream():
-        async with requests.AsyncSession(impersonate="chrome120") as session:
-            response = await session.post(
-                url,
-                json=payload,
-                headers=headers,
-                stream=True
-            )
-            
-            if response.status_code != 200:
-                error_msg = await response.aread()
-                yield f"data: {{\"error\": \"Backend error {response.status_code}: {error_msg.decode('utf-8')}\"}}\n\n"
-                yield "data: [DONE]\n\n"
-                return
 
-            async for chunk in response.aiter_lines():
-                if chunk:
-                    yield chunk.decode('utf-8') + "\n\n"
-
-    return StreamingResponse(generate_stream(), media_type="text/event-stream")
-
-# ===============================
-# 🚀 路由 1：Codex 专属接口路由
-# ===============================
-@app.post("/v1/responses")
-async def proxy_codex_responses(request: Request):
-    print("[Route] 路由至 Codex 后端...")
-    try:
-        payload = await request.json()
-        token = await token_manager.get_valid_token()
-        codex_url = "https://chatgpt.com/backend-api/codex/responses"
-        return await forward_request(codex_url, payload, token, token_manager.device_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ===============================
-# 💬 路由 2：标准对话接口路由
-# ===============================
-@app.post("/v1/chat/completions")
-async def proxy_chat_completions(request: Request):
-    print("[Route] 路由至标准对话后端...")
-    try:
-        payload = await request.json()
-        token = await token_manager.get_valid_token()
-        chat_url = "https://chatgpt.com/backend-api/conversation"
-        return await forward_request(chat_url, payload, token, token_manager.device_id)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ══════════════════════════════════════════════════════════════════════════
+#  Entrypoint
+# ══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import uvicorn
-    # 绑定 0.0.0.0 和系统分配的 PORT，本地默认 8080
     port = int(os.getenv("PORT", 8080))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
