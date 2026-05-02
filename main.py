@@ -520,13 +520,67 @@ async def chat_completions(req: ChatCompletionRequest):
 
     try:
         if req.stream:
-            return await _stream_codex_response(payload, headers)
+            return await _stream_codex_response_for_chat_completions(payload, headers, req.model)
         else:
             return await _non_stream_codex_response(payload, headers, req.model)
     except Exception as e:
         log.error(f"[chat] codex error: {e}", exc_info=True)
         raise HTTPException(status_code=502, detail=str(e))
 
+
+async def _stream_codex_response_for_chat_completions(payload: dict, headers: dict, model: str) -> StreamingResponse:
+    # 专门为标准 API (chat/completions) 转译 Codex 流
+    async def generate():
+        cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+        
+        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
+            resp = await session.post(
+                f"{CODEX_BASE_URL}/responses",
+                json=payload, headers=headers, stream=True, timeout=600,
+            )
+            if resp.status_code != 200:
+                err = resp.content
+                yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                if not decoded.startswith("data: "):
+                    continue
+                    
+                data_str = decoded[6:].strip()
+                if data_str == "[DONE]":
+                    yield "data: [DONE]\n\n"
+                    break
+                    
+                try:
+                    event = json.loads(data_str)
+                except:
+                    continue
+                
+                # 从 Codex 的 event 中提取 output_text
+                outputs = event.get("output", [])
+                for item in outputs:
+                    if item.get("type") == "message":
+                        for part in item.get("content", []):
+                            if part.get("type") == "output_text":
+                                text = part.get("text", "")
+                                if text:
+                                    # 包装成标准的 OpenAI API chunk
+                                    chunk = {
+                                        "id": cmpl_id,
+                                        "object": "chat.completion.chunk",
+                                        "created": created,
+                                        "model": model,
+                                        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]
+                                    }
+                                    yield f"data: {json.dumps(chunk)}\n\n"
+                                    
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 async def _stream_codex_response(payload: dict, headers: dict) -> StreamingResponse:
     async def generate():
