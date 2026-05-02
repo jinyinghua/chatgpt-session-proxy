@@ -124,7 +124,7 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
         "oai-device-id": device_id,
     }
 
-    async with curl_requests.AsyncSession() as session:
+    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
         resp = await session.post(
             f"{BASE_URL}/sentinel/chat-requirements",
             json={"p": req_token},
@@ -211,7 +211,7 @@ async def _resolve_image_url(access_token: str, device_id: str,
         "User-Agent": WEB_USER_AGENT,
         "oai-device-id": device_id,
     }
-    async with curl_requests.AsyncSession() as session:
+    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
         resp = await session.get(
             f"{BASE_URL}/files/{file_id}/download",
             headers=headers,
@@ -340,7 +340,7 @@ async def _handle_image_via_conversation(
         route_label = path.split("/")[-1]
         log.info(f"[conv] trying {path}")
         try:
-            async with curl_requests.AsyncSession() as session:
+            async with curl_requests.AsyncSession(impersonate="chrome110") as session:
                 resp = await session.post(
                     f"{BASE_URL}{path}",
                     json=body, headers=headers, stream=True, timeout=300,
@@ -534,7 +534,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
         cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
         
-        async with curl_requests.AsyncSession() as session:
+        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             resp = await session.post(
                 f"{CODEX_BASE_URL}/responses",
                 json=payload, headers=headers, stream=True, timeout=600,
@@ -584,7 +584,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
 
 async def _stream_codex_response(payload: dict, headers: dict) -> StreamingResponse:
     async def generate():
-        async with curl_requests.AsyncSession() as session:
+        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             resp = await session.post(
                 f"{CODEX_BASE_URL}/responses",
                 json=payload, headers=headers, stream=True, timeout=600,
@@ -605,7 +605,7 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
 
 
 async def _non_stream_codex_response(payload: dict, headers: dict, model: str) -> dict:
-    async with curl_requests.AsyncSession() as session:
+    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
         resp = await session.post(
             f"{CODEX_BASE_URL}/responses",
             json=payload, headers=headers, timeout=600,
@@ -669,7 +669,7 @@ async def proxy_codex_responses(request: Request):
     if payload.get("stream"):
         return await _stream_codex_response(payload, headers)
     else:
-        async with curl_requests.AsyncSession() as session:
+        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             resp = await session.post(
                 f"{CODEX_BASE_URL}/responses",
                 json=payload, headers=headers, timeout=600,
