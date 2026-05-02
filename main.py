@@ -600,9 +600,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                         
             except Exception as e:
                 log.error(f"[chat/completions] Streaming error: {e}", exc_info=True)
-                yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}
-
-"
+                yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}\n\n"
                 yield "data: [DONE]\n\n"
                                     
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -642,9 +640,7 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                         break
             except Exception as e:
                 log.error(f"[responses] Streaming error: {e}", exc_info=True)
-                yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}
-
-"
+                yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}\n\n"
                 yield "data: [DONE]\n\n"
                 
     return StreamingResponse(generate(), media_type="text/event-stream")
