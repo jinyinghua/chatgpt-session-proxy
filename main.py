@@ -534,73 +534,137 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
         cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
         
+        log.info("[chat/completions] Starting stream to codex/responses...")
         async with curl_requests.AsyncSession(impersonate="chrome110") as session:
-            resp = await session.post(
-                f"{CODEX_BASE_URL}/responses",
-                json=payload, headers=headers, stream=True, timeout=600,
-            )
-            if resp.status_code != 200:
-                err = resp.content
-                yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-            
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-                if not decoded.startswith("data: "):
-                    continue
-                    
-                data_str = decoded[6:].strip()
-                if data_str == "[DONE]":
-                    yield "data: [DONE]\n\n"
-                    break
-                    
-                try:
-                    event = json.loads(data_str)
-                except:
-                    continue
+            try:
+                resp = await session.post(
+                    f"{CODEX_BASE_URL}/responses",
+                    json=payload, headers=headers, stream=True, timeout=600,
+                )
+                log.info(f"[chat/completions] codex/responses returned status_code={resp.status_code}")
                 
-                # 从 Codex 的 event 中提取 output_text
-                outputs = event.get("output", [])
-                for item in outputs:
-                    if item.get("type") == "message":
-                        for part in item.get("content", []):
-                            if part.get("type") == "output_text":
-                                text = part.get("text", "")
-                                if text:
-                                    # 包装成标准的 OpenAI API chunk
-                                    chunk = {
-                                        "id": cmpl_id,
-                                        "object": "chat.completion.chunk",
-                                        "created": created,
-                                        "model": model,
-                                        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]
-                                    }
-                                    yield f"data: {json.dumps(chunk)}\n\n"
+                if resp.status_code != 200:
+                    err = resp.content
+                    log.error(f"[chat/completions] Error from backend: {err.decode()[:500]}")
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}
+
+"
+                    yield "data: [DONE]
+
+"
+                    return
+                
+                chunk_count = 0
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                    
+                    if not decoded.startswith("data: "):
+                        if decoded.strip():
+                            log.info(f"[chat/completions] Ignoring non-data line: {decoded[:50]}...")
+                        continue
+                        
+                    data_str = decoded[6:].strip()
+                    if data_str == "[DONE]":
+                        log.info(f"[chat/completions] Received [DONE] from backend after {chunk_count} chunks.")
+                        yield "data: [DONE]
+
+"
+                        break
+                        
+                    try:
+                        event = json.loads(data_str)
+                    except Exception as e:
+                        log.warning(f"[chat/completions] Failed to parse JSON chunk: {e}. Raw: {data_str[:50]}...")
+                        continue
+                    
+                    # 从 Codex 的 event 中提取 output_text
+                    outputs = event.get("output", [])
+                    has_output = False
+                    for item in outputs:
+                        if item.get("type") == "message":
+                            for part in item.get("content", []):
+                                if part.get("type") == "output_text":
+                                    text = part.get("text", "")
+                                    if text:
+                                        has_output = True
+                                        chunk_count += 1
+                                        if chunk_count <= 3:
+                                            log.info(f"[chat/completions] Emitting delta text: {text[:20]}...")
+                                        chunk = {
+                                            "id": cmpl_id,
+                                            "object": "chat.completion.chunk",
+                                            "created": created,
+                                            "model": model,
+                                            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]
+                                        }
+                                        yield f"data: {json.dumps(chunk)}
+
+"
+                    
+                    if not has_output and chunk_count < 2:
+                        log.info(f"[chat/completions] Ignored event (no output_text): {data_str[:80]}...")
+                        
+            except Exception as e:
+                log.error(f"[chat/completions] Streaming error: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}
+
+"
+                yield "data: [DONE]
+
+"
                                     
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 async def _stream_codex_response(payload: dict, headers: dict) -> StreamingResponse:
     async def generate():
+        log.info("[responses] Starting direct proxy stream to codex/responses...")
         async with curl_requests.AsyncSession(impersonate="chrome110") as session:
-            resp = await session.post(
-                f"{CODEX_BASE_URL}/responses",
-                json=payload, headers=headers, stream=True, timeout=600,
-            )
-            if resp.status_code != 200:
-                err = resp.content
-                yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
-                yield "data: [DONE]\n\n"
-                return
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-                yield f"{decoded}\n\n"
-                if decoded.strip() == "data: [DONE]":
-                    break
+            try:
+                resp = await session.post(
+                    f"{CODEX_BASE_URL}/responses",
+                    json=payload, headers=headers, stream=True, timeout=600,
+                )
+                log.info(f"[responses] codex/responses returned status_code={resp.status_code}")
+                
+                if resp.status_code != 200:
+                    err = resp.content
+                    log.error(f"[responses] Error from backend: {err.decode()[:500]}")
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}
+
+"
+                    yield "data: [DONE]
+
+"
+                    return
+                
+                chunk_count = 0
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                    
+                    if decoded.strip():
+                        chunk_count += 1
+                        if chunk_count <= 3:
+                            log.info(f"[responses] Got chunk #{chunk_count}: {decoded[:80]}...")
+                            
+                    yield f"{decoded}
+
+"
+                    if decoded.strip() == "data: [DONE]":
+                        log.info(f"[responses] Received [DONE] from backend after {chunk_count} chunks.")
+                        break
+            except Exception as e:
+                log.error(f"[responses] Streaming error: {e}", exc_info=True)
+                yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}
+
+"
+                yield "data: [DONE]
+
+"
+                
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
