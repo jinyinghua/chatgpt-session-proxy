@@ -346,7 +346,7 @@ async def _handle_image_via_conversation(
                     json=body, headers=headers, stream=True, timeout=300,
                 )
                 if resp.status_code != 200:
-                    err_body = await resp.aread()
+                    err_body = resp.content
                     log.warning(f"[conv] {route_label} returned {resp.status_code}: {err_body[:512]}")
                     if resp.status_code in (403, 404) and path == "/f/conversation":
                         continue
@@ -531,7 +531,7 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                 json=payload, headers=headers, stream=True, timeout=600,
             )
             if resp.status_code != 200:
-                err = await resp.aread()
+                err = resp.content
                 yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
                 yield "data: [DONE]\n\n"
                 return
@@ -552,7 +552,7 @@ async def _non_stream_codex_response(payload: dict, headers: dict, model: str) -
             json=payload, headers=headers, timeout=600,
         )
         if resp.status_code != 200:
-            err = await resp.aread()
+            err = resp.content
             raise Exception(f"Codex returned {resp.status_code}: {err.decode()[:500]}")
         data = resp.json()
 
@@ -611,7 +611,7 @@ async def proxy_codex_responses(request: Request):
                 json=payload, headers=headers, timeout=600,
             )
             if resp.status_code != 200:
-                err = await resp.aread()
+                err = resp.content
                 raise HTTPException(status_code=resp.status_code, detail=err.decode()[:500])
             return resp.json()
 
