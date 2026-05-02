@@ -60,7 +60,7 @@ class TokenManager:
             "__Secure-next-auth.session-token.1": self.session_1
         }
 
-        async with requests.AsyncSession(impersonate="chrome120") as session:
+        async with requests.AsyncSession(impersonate="chrome110") as session:
             try:
                 response = await session.get(
                     "https://chatgpt.com/api/auth/session",
