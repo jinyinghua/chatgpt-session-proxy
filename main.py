@@ -546,12 +546,8 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                 if resp.status_code != 200:
                     err = resp.content
                     log.error(f"[chat/completions] Error from backend: {err.decode()[:500]}")
-                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}
-
-"
-                    yield "data: [DONE]
-
-"
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
+                    yield "data: [DONE]\n\n"
                     return
                 
                 chunk_count = 0
@@ -568,9 +564,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                     data_str = decoded[6:].strip()
                     if data_str == "[DONE]":
                         log.info(f"[chat/completions] Received [DONE] from backend after {chunk_count} chunks.")
-                        yield "data: [DONE]
-
-"
+                        yield "data: [DONE]\n\n"
                         break
                         
                     try:
@@ -599,9 +593,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                                             "model": model,
                                             "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]
                                         }
-                                        yield f"data: {json.dumps(chunk)}
-
-"
+                                        yield f"data: {json.dumps(chunk)}\n\n"
                     
                     if not has_output and chunk_count < 2:
                         log.info(f"[chat/completions] Ignored event (no output_text): {data_str[:80]}...")
@@ -611,9 +603,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                 yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}
 
 "
-                yield "data: [DONE]
-
-"
+                yield "data: [DONE]\n\n"
                                     
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -631,12 +621,8 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                 if resp.status_code != 200:
                     err = resp.content
                     log.error(f"[responses] Error from backend: {err.decode()[:500]}")
-                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}
-
-"
-                    yield "data: [DONE]
-
-"
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
+                    yield "data: [DONE]\n\n"
                     return
                 
                 chunk_count = 0
@@ -650,9 +636,7 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                         if chunk_count <= 3:
                             log.info(f"[responses] Got chunk #{chunk_count}: {decoded[:80]}...")
                             
-                    yield f"{decoded}
-
-"
+                    yield f"{decoded}\n\n"
                     if decoded.strip() == "data: [DONE]":
                         log.info(f"[responses] Received [DONE] from backend after {chunk_count} chunks.")
                         break
@@ -661,9 +645,7 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                 yield f"data: {json.dumps({'error': {'message': f'Proxy Stream Error: {str(e)}'}})}
 
 "
-                yield "data: [DONE]
-
-"
+                yield "data: [DONE]\n\n"
                 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
