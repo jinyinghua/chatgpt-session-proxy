@@ -493,6 +493,8 @@ async def chat_completions(req: ChatCompletionRequest):
     # ── Standard text conversation → codex/responses ─────────────────────
     prompt = _extract_prompt_from_messages(req.messages)
     access_token = await token_manager.get_valid_token()
+    device_id = token_manager.device_id
+    chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
 
     payload = {
         "model": model,
@@ -509,7 +511,10 @@ async def chat_completions(req: ChatCompletionRequest):
         "Originator": CODEX_ORIGINATOR,
         "Chatgpt-Account-Id": token_manager.account_id,
         "Session_id": str(uuid.uuid4()),
+        "openai-sentinel-chat-requirements-token": chat_token,
     }
+    if proof_token:
+        headers["openai-sentinel-proof-token"] = proof_token
 
     log.info(f"[chat] text mode, forwarding to codex/responses, stream={req.stream}")
 
@@ -585,6 +590,8 @@ async def _non_stream_codex_response(payload: dict, headers: dict, model: str) -
 async def proxy_codex_responses(request: Request):
     payload = await request.json()
     access_token = await token_manager.get_valid_token()
+    device_id = token_manager.device_id
+    chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
 
     tools = payload.get("tools", [])
     has_image_tool = any(t.get("type", "").lower() == "image_generation" for t in tools)
@@ -598,7 +605,10 @@ async def proxy_codex_responses(request: Request):
         "Chatgpt-Account-Id": token_manager.account_id,
         "Session_id": str(uuid.uuid4()),
         "Connection": "Keep-Alive",
+        "openai-sentinel-chat-requirements-token": chat_token,
     }
+    if proof_token:
+        headers["openai-sentinel-proof-token"] = proof_token
 
     log.info(f"[responses] has_image_tool={has_image_tool}, stream={payload.get('stream', False)}")
 
