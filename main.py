@@ -110,6 +110,61 @@ async def auth_middleware(request: Request, call_next):
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  Codaze-compatible header & request normalization
+# ══════════════════════════════════════════════════════════════════════════
+
+def build_codex_headers(access_token: str, account_id: str, installation_id: str) -> dict:
+    """Build Codex-compatible headers (ported from Codaze headers.rs)"""
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "ChatGPT-Account-ID": account_id,
+        "x-codex-installation-id": installation_id,
+        "x-codex-turn-metadata": json.dumps({"thread_source": "user"}),
+        "x-openai-subagent": "user",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+
+
+def normalize_codex_request(payload: dict) -> dict:
+    """Normalize request body like Codaze request_normalization.rs"""
+    for key in ["max_output_tokens", "max_completion_tokens", "temperature",
+                "top_p", "truncation", "user"]:
+        payload.pop(key, None)
+
+    st = payload.get("service_tier")
+    if st != "priority":
+        payload.pop("service_tier", None)
+
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict):
+                t = tool.get("type", "")
+                if t in ("web_search_preview", "web_search_preview_2025_03_11"):
+                    tool["type"] = "web_search"
+
+    tc = payload.get("tool_choice")
+    if isinstance(tc, str) and tc in ("web_search_preview", "web_search_preview_2025_03_11"):
+        payload["tool_choice"] = "web_search"
+    elif isinstance(tc, dict):
+        t = tc.get("type", "")
+        if t in ("web_search_preview", "web_search_preview_2025_03_11"):
+            tc["type"] = "web_search"
+
+    inst = payload.get("instructions")
+    if inst is None:
+        payload["instructions"] = ""
+    if "store" not in payload:
+        payload["store"] = False
+    if "parallel_tool_calls" not in payload:
+        payload["parallel_tool_calls"] = True
+
+    return payload
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  Token & PoW helpers
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -120,7 +175,8 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "User-Agent": WEB_USER_AGENT,
+        "User-Agent": CODEX_USER_AGENT,
+        "Originator": CODEX_ORIGINATOR,
         "oai-device-id": device_id,
     }
 
@@ -503,19 +559,16 @@ async def chat_completions(req: ChatCompletionRequest):
         "store": False,
     }
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream" if req.stream else "application/json",
-        "User-Agent": CODEX_USER_AGENT,
-        "Originator": CODEX_ORIGINATOR,
-        "Chatgpt-Account-Id": token_manager.account_id,
-        "Session_id": str(uuid.uuid4()),
-        "openai-sentinel-chat-requirements-token": chat_token,
-    }
+    headers = build_codex_headers(access_token, token_manager.account_id, token_manager.installation_id)
+    headers["User-Agent"] = CODEX_USER_AGENT
+    headers["Originator"] = CODEX_ORIGINATOR
+    headers["session_id"] = str(uuid.uuid4())
+    headers["x-client-request-id"] = headers["session_id"]
+    headers["openai-sentinel-chat-requirements-token"] = chat_token
     if proof_token:
         headers["openai-sentinel-proof-token"] = proof_token
 
+    payload = normalize_codex_request(payload)
     log.info(f"[chat] text mode, forwarding to codex/responses, stream={req.stream}")
 
     try:
@@ -724,20 +777,16 @@ async def proxy_codex_responses(request: Request):
     tools = payload.get("tools", [])
     has_image_tool = any(t.get("type", "").lower() == "image_generation" for t in tools)
 
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-        "User-Agent": CODEX_USER_AGENT,
-        "Originator": CODEX_ORIGINATOR,
-        "Chatgpt-Account-Id": token_manager.account_id,
-        "Session_id": str(uuid.uuid4()),
-        "Connection": "Keep-Alive",
-        "openai-sentinel-chat-requirements-token": chat_token,
-    }
+    headers = build_codex_headers(access_token, token_manager.account_id, token_manager.installation_id)
+    headers["User-Agent"] = CODEX_USER_AGENT
+    headers["Originator"] = CODEX_ORIGINATOR
+    headers["session_id"] = str(uuid.uuid4())
+    headers["x-client-request-id"] = headers["session_id"]
+    headers["openai-sentinel-chat-requirements-token"] = chat_token
     if proof_token:
         headers["openai-sentinel-proof-token"] = proof_token
 
+    payload = normalize_codex_request(payload)
     log.info(f"[responses] has_image_tool={has_image_tool}, stream={payload.get('stream', False)}")
 
     if payload.get("stream"):
