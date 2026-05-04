@@ -114,16 +114,27 @@ async def auth_middleware(request: Request, call_next):
 # ══════════════════════════════════════════════════════════════════════════
 
 def build_codex_headers(access_token: str, account_id: str, installation_id: str) -> dict:
-    """Build Codex-compatible headers (ported from Codaze headers.rs)"""
+    """Build Codex-compatible headers (ported from codexProapi proxy.js)"""
     return {
         "Authorization": f"Bearer {access_token}",
-        "ChatGPT-Account-ID": account_id,
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Referer": "https://chatgpt.com/",
+        "Origin": "https://chatgpt.com",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "DNT": "1",
+        "OpenAI-Beta": "responses=experimental",
+        "originator": "codex_cli_rs",
+        "chatgpt-account-id": account_id,
+        "Connection": "keep-alive",
         "x-codex-installation-id": installation_id,
         "x-codex-turn-metadata": json.dumps({"thread_source": "user"}),
         "x-openai-subagent": "user",
-        "Connection": "keep-alive",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
     }
 
 
@@ -175,8 +186,7 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
-        "User-Agent": CODEX_USER_AGENT,
-        "Originator": CODEX_ORIGINATOR,
+        "User-Agent": WEB_USER_AGENT,
         "oai-device-id": device_id,
     }
 
@@ -560,8 +570,8 @@ async def chat_completions(req: ChatCompletionRequest):
     }
 
     headers = build_codex_headers(access_token, token_manager.account_id, token_manager.installation_id)
-    headers["User-Agent"] = CODEX_USER_AGENT
-    headers["Originator"] = CODEX_ORIGINATOR
+    # UA now set to Chrome in build_codex_headers
+    # Originator now set in build_codex_headers
     headers["session_id"] = str(uuid.uuid4())
     headers["x-client-request-id"] = headers["session_id"]
     headers["openai-sentinel-chat-requirements-token"] = chat_token
@@ -588,7 +598,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
         created = int(time.time())
         
         log.info("[chat/completions] Starting stream to codex/responses...")
-        async with curl_requests.AsyncSession() as session:
+        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             try:
                 log.info(f'[chat/completions] POST {CODEX_BASE_URL}/responses')
                 log.info(f'[chat/completions] Headers: { {k: (v[:60]+"..." if isinstance(v,str) and len(v)>60 else v) for k,v in headers.items()} }')
@@ -674,7 +684,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
 async def _stream_codex_response(payload: dict, headers: dict) -> StreamingResponse:
     async def generate():
         log.info("[responses] Starting direct proxy stream to codex/responses...")
-        async with curl_requests.AsyncSession() as session:
+        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             try:
                 log.info(f'[responses] POST {CODEX_BASE_URL}/responses')
                 log.info(f'[responses] Headers: { {k: (v[:60]+"..." if isinstance(v,str) and len(v)>60 else v) for k,v in headers.items()} }')
@@ -726,7 +736,7 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
 
 
 async def _non_stream_codex_response(payload: dict, headers: dict, model: str) -> dict:
-    async with curl_requests.AsyncSession() as session:
+    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
         resp = await session.post(
             f"{CODEX_BASE_URL}/responses",
             json=payload, headers=headers, timeout=600,
@@ -804,8 +814,8 @@ async def proxy_codex_responses(request: Request):
     has_image_tool = any(t.get("type", "").lower() == "image_generation" for t in tools)
 
     headers = build_codex_headers(access_token, token_manager.account_id, token_manager.installation_id)
-    headers["User-Agent"] = CODEX_USER_AGENT
-    headers["Originator"] = CODEX_ORIGINATOR
+    # UA now set to Chrome in build_codex_headers
+    # Originator now set in build_codex_headers
     headers["session_id"] = str(uuid.uuid4())
     headers["x-client-request-id"] = headers["session_id"]
     headers["openai-sentinel-chat-requirements-token"] = chat_token
@@ -818,7 +828,7 @@ async def proxy_codex_responses(request: Request):
     if payload.get("stream"):
         return await _stream_codex_response(payload, headers)
     else:
-        async with curl_requests.AsyncSession() as session:
+        async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             resp = await session.post(
                 f"{CODEX_BASE_URL}/responses",
                 json=payload, headers=headers, timeout=600,
