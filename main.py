@@ -20,7 +20,7 @@ import time
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from curl_cffi import requests as curl_requests
 from dotenv import load_dotenv
@@ -50,7 +50,7 @@ IMAGE_MODELS = {"gpt-image-1", "gpt-image-2"}
 API_KEY = os.getenv("API_KEY", "")
 
 # 不需要鉴权的白名单路径
-AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/"}
+AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/auth/session", "/auth/status"}
 
 
 # ── App ─────────────────────────────────────────────────────────────────
@@ -720,6 +720,188 @@ async def proxy_codex_responses(request: Request):
                 err = resp.content
                 raise HTTPException(status_code=resp.status_code, detail=err.decode()[:500])
             return resp.json()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  前端管理页面 & Session 管理 API
+# ══════════════════════════════════════════════════════════════════════════
+
+MANAGER_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChatGPT Session Proxy - 管理</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+         background: #1a1a2e; color: #e0e0e0; min-height: 100vh;
+         display: flex; justify-content: center; align-items: flex-start; padding: 2rem; }
+  .container { max-width: 720px; width: 100%; }
+  h1 { font-size: 1.8rem; margin-bottom: 0.5rem; color: #00d4ff; }
+  .subtitle { color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
+  .card { background: #16213e; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem;
+          border: 1px solid #0f3460; }
+  .card h2 { font-size: 1.1rem; color: #e94560; margin-bottom: 1rem; }
+  textarea { width: 100%; height: 200px; background: #0a0a1a; color: #e0e0e0;
+             border: 1px solid #333; border-radius: 8px; padding: 1rem;
+             font-family: 'Fira Code', monospace; font-size: 0.85rem; resize: vertical; }
+  textarea:focus { outline: none; border-color: #00d4ff; }
+  button { background: #e94560; color: white; border: none; border-radius: 8px;
+           padding: 0.8rem 2rem; font-size: 1rem; cursor: pointer; margin-top: 1rem;
+           transition: background 0.2s; }
+  button:hover { background: #ff6b6b; }
+  button.secondary { background: #0f3460; }
+  button.secondary:hover { background: #1a4a8a; }
+  .status { padding: 1rem; border-radius: 8px; margin-top: 1rem; font-size: 0.9rem; }
+  .status.ok { background: #0d3320; border: 1px solid #00c853; color: #69f0ae; }
+  .status.error { background: #3d0000; border: 1px solid #ff1744; color: #ff8a80; }
+  .status.info { background: #0d1b3e; border: 1px solid #2979ff; color: #82b1ff; }
+  .info-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 1rem; margin-top: 0.5rem; }
+  .info-label { color: #888; font-weight: 600; }
+  .info-value { color: #e0e0e0; word-break: break-all; }
+  .instructions { background: #0a0a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;
+                  font-size: 0.85rem; line-height: 1.6; color: #aaa; }
+  .instructions ol { padding-left: 1.2rem; }
+  .instructions li { margin-bottom: 0.3rem; }
+  .instructions code { background: #1a1a3e; padding: 0.1rem 0.4rem; border-radius: 4px; color: #00d4ff; }
+  .refresh-btn { font-size: 0.85rem; padding: 0.5rem 1rem; margin-left: 0.5rem; }
+  .flex-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>ChatGPT Session Proxy</h1>
+  <p class="subtitle">管理 Session Token — 粘贴 /api/auth/session 的 JSON 即可</p>
+
+  <div class="card">
+    <h2>使用说明</h2>
+    <div class="instructions">
+      <ol>
+        <li>在浏览器中打开 <a href="https://chatgpt.com" target="_blank" style="color:#00d4ff">chatgpt.com</a> 并登录</li>
+        <li>按 <code>F12</code> 打开开发者工具 → <code>Console</code> 标签页</li>
+        <li>输入 <code>await fetch('/api/auth/session').then(r=>r.json()).then(j=>copy(JSON.stringify(j)))</code></li>
+        <li>JSON 已复制到剪贴板，粘贴到下方即可</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>粘贴 Session JSON</h2>
+    <textarea id="sessionInput" placeholder='{"accessToken":"eyJ...","sessionToken":"eyJ...","account":{"id":"..."},...}'></textarea>
+    <div class="flex-row">
+      <button onclick="submitSession()">保存 Session</button>
+      <button class="secondary" onclick="refreshStatus()">刷新状态</button>
+    </div>
+    <div id="submitResult"></div>
+  </div>
+
+  <div class="card">
+    <h2>当前状态</h2>
+    <div id="statusArea">
+      <p style="color:#888">正在加载...</p>
+    </div>
+  </div>
+</div>
+
+<script>
+async function refreshStatus() {
+  const el = document.getElementById('statusArea');
+  try {
+    const r = await fetch('/auth/status');
+    const d = await r.json();
+    if (d.status === 'no_session') {
+      el.innerHTML = '<div class="status error">未配置 Session，请在上方粘贴 JSON</div>';
+      return;
+    }
+    const expDate = new Date(d.expires * 1000);
+    const isExpired = expDate < new Date();
+    const statusClass = isExpired ? 'error' : 'ok';
+    const statusText = isExpired ? '已过期' : '有效';
+    el.innerHTML = `
+      <div class="status ${statusClass}">Token 状态: ${statusText}</div>
+      <div class="info-grid" style="margin-top:1rem">
+        <span class="info-label">Account ID:</span>
+        <span class="info-value">${d.account_id || 'N/A'}</span>
+        <span class="info-label">过期时间:</span>
+        <span class="info-value">${expDate.toLocaleString()} ${isExpired ? '(已过期，下次请求时自动刷新)' : ''}</span>
+        <span class="info-label">设备 ID:</span>
+        <span class="info-value">${d.device_id || 'N/A'}</span>
+      </div>
+    `;
+  } catch(e) {
+    el.innerHTML = `<div class="status error">获取状态失败: ${e.message}</div>`;
+  }
+}
+
+async function submitSession() {
+  const input = document.getElementById('sessionInput').value.trim();
+  const result = document.getElementById('submitResult');
+  if (!input) {
+    result.innerHTML = '<div class="status error">请粘贴 Session JSON</div>';
+    return;
+  }
+  try {
+    const r = await fetch('/auth/session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: input
+    });
+    const d = await r.json();
+    if (r.ok) {
+      result.innerHTML = `<div class="status ok">${d.message}</div>`;
+      document.getElementById('sessionInput').value = '';
+      refreshStatus();
+    } else {
+      result.innerHTML = `<div class="status error">错误: ${d.detail || JSON.stringify(d)}</div>`;
+    }
+  } catch(e) {
+    result.innerHTML = `<div class="status error">请求失败: ${e.message}</div>`;
+  }
+}
+
+// 页面加载时刷新状态
+refreshStatus();
+</script>
+</body>
+</html>"""
+
+
+@app.get("/")
+async def manager_page():
+    return HTMLResponse(MANAGER_HTML)
+
+
+@app.post("/auth/session")
+async def update_session(request: Request):
+    """接收并保存 session JSON"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="无效的 JSON")
+
+    # 验证必须字段
+    if "accessToken" not in body and "sessionToken" not in body:
+        raise HTTPException(status_code=400, detail="JSON 中缺少 accessToken 和 sessionToken")
+
+    result = token_manager.load_session_from_json(body)
+    log.info(f"[auth] Session 已更新: account_id={token_manager.account_id[:8]}...")
+    return result
+
+
+@app.get("/auth/status")
+async def auth_status():
+    """返回当前 session 状态"""
+    if not token_manager.access_token and not token_manager.session_token:
+        return {"status": "no_session"}
+
+    return {
+        "status": "ok",
+        "account_id": token_manager.account_id,
+        "expires": token_manager.expires_at,
+        "device_id": token_manager.device_id,
+        "has_session_token": bool(token_manager.session_token),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════
