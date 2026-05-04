@@ -600,15 +600,18 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                 log.info(f"[chat/completions] codex/responses status={resp.status_code}, headers={resp_headers}")
                 
                 if resp.status_code != 200:
-                    err_chunks = []
+                    err_text = "(could not read body)"
                     try:
-                        async for chunk in resp.aiter_bytes():
-                            err_chunks.append(chunk)
+                        err_text = resp.text if hasattr(resp, 'text') else str(resp.content)
                     except Exception:
-                        pass
-                    err_raw = b"".join(err_chunks) if err_chunks else resp.content
-                    err_text = err_raw.decode("utf-8", errors="replace") if err_raw else "(empty body)"
-                    log.error(f"[chat/completions] Error {resp.status_code}: [{len(err_raw)} bytes] {err_text}")
+                        try:
+                            err_text = resp.content.decode("utf-8", errors="replace")
+                        except Exception:
+                            pass
+                    log.error(f"[chat/completions] Error {resp.status_code}: {err_text}")
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err_text}'}})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                     yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err_text}'}})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
@@ -683,15 +686,18 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                 log.info(f"[responses] codex/responses status={resp.status_code}, headers={resp_headers}")
                 
                 if resp.status_code != 200:
-                    err_chunks = []
+                    err_text = "(could not read body)"
                     try:
-                        async for chunk in resp.aiter_bytes():
-                            err_chunks.append(chunk)
+                        err_text = resp.text if hasattr(resp, 'text') else str(resp.content)
                     except Exception:
-                        pass
-                    err_raw = b"".join(err_chunks) if err_chunks else resp.content
-                    err_text = err_raw.decode("utf-8", errors="replace") if err_raw else "(empty body)"
-                    log.error(f"[responses] Error {resp.status_code}: [{len(err_raw)} bytes] {err_text}")
+                        try:
+                            err_text = resp.content.decode("utf-8", errors="replace")
+                        except Exception:
+                            pass
+                    log.error(f"[responses] Error {resp.status_code}: {err_text}")
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err_text}'}})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                     yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err_text}'}})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
