@@ -133,44 +133,30 @@ def build_codex_headers(access_token: str, account_id: str, installation_id: str
         "chatgpt-account-id": account_id,
         "Connection": "keep-alive",
         "x-codex-installation-id": installation_id,
-        "x-codex-turn-metadata": json.dumps({"thread_source": "user"}),
-        "x-openai-subagent": "user",
     }
 
 
 def normalize_codex_request(payload: dict) -> dict:
-    """Normalize request body like Codaze request_normalization.rs"""
+    """Normalize request body to match codexProapi buildResponsesRequest()"""
+    # Remove fields codexProapi doesn't send
     for key in ["max_output_tokens", "max_completion_tokens", "temperature",
-                "top_p", "truncation", "user"]:
+                "top_p", "truncation", "user", "service_tier"]:
         payload.pop(key, None)
 
-    st = payload.get("service_tier")
-    if st != "priority":
-        payload.pop("service_tier", None)
+    # Tools: default to empty array
+    if "tools" not in payload:
+        payload["tools"] = []
+    # tool_choice: 'none' if no tools
+    if not payload["tools"] and "tool_choice" not in payload:
+        payload["tool_choice"] = "none"
 
-    tools = payload.get("tools")
-    if isinstance(tools, list):
-        for tool in tools:
-            if isinstance(tool, dict):
-                t = tool.get("type", "")
-                if t in ("web_search_preview", "web_search_preview_2025_03_11"):
-                    tool["type"] = "web_search"
-
-    tc = payload.get("tool_choice")
-    if isinstance(tc, str) and tc in ("web_search_preview", "web_search_preview_2025_03_11"):
-        payload["tool_choice"] = "web_search"
-    elif isinstance(tc, dict):
-        t = tc.get("type", "")
-        if t in ("web_search_preview", "web_search_preview_2025_03_11"):
-            tc["type"] = "web_search"
-
-    inst = payload.get("instructions")
-    if inst is None:
-        payload["instructions"] = ""
-    if "store" not in payload:
-        payload["store"] = False
-    if "parallel_tool_calls" not in payload:
-        payload["parallel_tool_calls"] = True
+    # Required fields matching codexProapi exactly
+    payload.setdefault("instructions", "You are a helpful AI assistant. Provide clear, accurate, and concise responses.")
+    payload.setdefault("store", False)
+    payload.setdefault("stream", True)
+    payload.setdefault("parallel_tool_calls", False)
+    payload.setdefault("reasoning", None)
+    payload.setdefault("include", [])
 
     return payload
 
@@ -559,8 +545,6 @@ async def chat_completions(req: ChatCompletionRequest):
     # ── Standard text conversation → codex/responses ─────────────────────
     prompt = _extract_prompt_from_messages(req.messages)
     access_token = await token_manager.get_valid_token()
-    device_id = token_manager.device_id
-    chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
 
     payload = {
         "model": model,
@@ -573,10 +557,6 @@ async def chat_completions(req: ChatCompletionRequest):
     # UA now set to Chrome in build_codex_headers
     # Originator now set in build_codex_headers
     headers["session_id"] = str(uuid.uuid4())
-    headers["x-client-request-id"] = headers["session_id"]
-    headers["openai-sentinel-chat-requirements-token"] = chat_token
-    if proof_token:
-        headers["openai-sentinel-proof-token"] = proof_token
 
     payload = normalize_codex_request(payload)
     log.info(f"[chat] text mode, forwarding to codex/responses, stream={req.stream}")
@@ -805,10 +785,7 @@ def normalize_codex_payload(payload: dict) -> dict:
 
 async def proxy_codex_responses(request: Request):
     payload = await request.json()
-    payload = normalize_codex_payload(payload)  # 注入清洗器
     access_token = await token_manager.get_valid_token()
-    device_id = token_manager.device_id
-    chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
 
     tools = payload.get("tools", [])
     has_image_tool = any(t.get("type", "").lower() == "image_generation" for t in tools)
@@ -817,10 +794,6 @@ async def proxy_codex_responses(request: Request):
     # UA now set to Chrome in build_codex_headers
     # Originator now set in build_codex_headers
     headers["session_id"] = str(uuid.uuid4())
-    headers["x-client-request-id"] = headers["session_id"]
-    headers["openai-sentinel-chat-requirements-token"] = chat_token
-    if proof_token:
-        headers["openai-sentinel-proof-token"] = proof_token
 
     payload = normalize_codex_request(payload)
     log.info(f"[responses] has_image_tool={has_image_tool}, stream={payload.get('stream', False)}")
