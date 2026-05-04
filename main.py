@@ -600,9 +600,16 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                 log.info(f"[chat/completions] codex/responses status={resp.status_code}, headers={resp_headers}")
                 
                 if resp.status_code != 200:
-                    err = resp.content
-                    log.error(f"[chat/completions] Error from backend: {err.decode()[:500]}")
-                    yield f"data: {json.dumps({'error': {'message': f'Backend returned {resp.status_code}: Auth failed or blocked. {err.decode()[:500]}'}})}\n\n"
+                    err_chunks = []
+                    try:
+                        async for chunk in resp.aiter_bytes():
+                            err_chunks.append(chunk)
+                    except Exception:
+                        pass
+                    err_raw = b"".join(err_chunks) if err_chunks else resp.content
+                    err_text = err_raw.decode("utf-8", errors="replace") if err_raw else "(empty body)"
+                    log.error(f"[chat/completions] Error {resp.status_code}: [{len(err_raw)} bytes] {err_text}")
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err_text}'}})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
                 
@@ -676,9 +683,16 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                 log.info(f"[responses] codex/responses status={resp.status_code}, headers={resp_headers}")
                 
                 if resp.status_code != 200:
-                    err = resp.content
-                    log.error(f"[responses] Error from backend: {err.decode()[:500]}")
-                    yield f"data: {json.dumps({'error': {'message': f'Backend returned {resp.status_code}: Auth failed or blocked. {err.decode()[:500]}'}})}\n\n"
+                    err_chunks = []
+                    try:
+                        async for chunk in resp.aiter_bytes():
+                            err_chunks.append(chunk)
+                    except Exception:
+                        pass
+                    err_raw = b"".join(err_chunks) if err_chunks else resp.content
+                    err_text = err_raw.decode("utf-8", errors="replace") if err_raw else "(empty body)"
+                    log.error(f"[responses] Error {resp.status_code}: [{len(err_raw)} bytes] {err_text}")
+                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err_text}'}})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
                 
