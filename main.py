@@ -226,9 +226,10 @@ def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL) -> dict:
         "timezone": "America/Los_Angeles",
         "conversation_mode": {"kind": "primary_assistant"},
         "enable_message_followups": True,
+        "client_prepare_state": "none",
         "system_hints": ["picture_v2"],
         "supports_buffering": True,
-        "supported_encodings": [],
+        "supported_encodings": ["v1"],
         "client_contextual_info": {
             "is_dark_mode": True,
             "time_since_loaded": 1000,
@@ -288,26 +289,31 @@ def build_text_conversation_body(messages: list, model: str = DEFAULT_MODEL) -> 
 # ══════════════════════════════════════════════════════════════════════════
 
 def _extract_file_id(asset_pointer: str) -> str:
-    if "file-service://" in asset_pointer:
-        return asset_pointer.split("file-service://", 1)[1].split("?")[0]
-    if "sediment://" in asset_pointer:
-        return asset_pointer.split("sediment://", 1)[1].split("?")[0]
+    for prefix in ("file-service://", "sediment://"):
+        if asset_pointer.startswith(prefix):
+            return asset_pointer[len(prefix):].split("?")[0]
     return ""
+
+def _is_sediment(asset_pointer: str) -> bool:
+    return asset_pointer.startswith("sediment://")
 
 
 async def _resolve_image_url(access_token: str, device_id: str,
-                              file_id: str, conversation_id: str) -> str:
+                              file_id: str, conversation_id: str, is_sediment: bool = False) -> str:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "User-Agent": WEB_USER_AGENT,
-        "oai-device-id": device_id,
+        "OAI-Device-Id": device_id,
     }
     async with curl_requests.AsyncSession(impersonate="chrome110") as session:
-        resp = await session.get(
-            f"{BASE_URL}/files/{file_id}/download",
-            headers=headers,
-            allow_redirects=False,
-        )
+        if is_sediment:
+            # sediment:// uses attachment API
+            url = f"{BASE_URL}/conversation/{conversation_id}/attachment/{file_id}/download"
+        else:
+            # file-service:// uses files API
+            url = f"{BASE_URL}/files/download/{file_id}?conversation_id={conversation_id}&inline=false"
+        
+        resp = await session.get(url, headers=headers, allow_redirects=False)
         if resp.status_code in (301, 302, 303, 307, 308):
             return resp.headers.get("Location", "")
         if resp.status_code == 200:
@@ -315,12 +321,14 @@ async def _resolve_image_url(access_token: str, device_id: str,
                 return resp.json().get("download_url", "")
             except Exception:
                 pass
-
-        resp2 = await session.get(
-            f"{BASE_URL}/attachments/{file_id}",
-            headers=headers,
-            allow_redirects=False,
-        )
+        
+        # Fallback: try the other URL format
+        if is_sediment:
+            fallback_url = f"{BASE_URL}/files/{file_id}/download"
+        else:
+            fallback_url = f"{BASE_URL}/attachments/{file_id}"
+        
+        resp2 = await session.get(fallback_url, headers=headers, allow_redirects=False)
         if resp2.status_code in (301, 302, 303, 307, 308):
             return resp2.headers.get("Location", "")
         if resp2.status_code == 200:
@@ -387,7 +395,7 @@ async def parse_conversation_sse(
             gen_id = dalle_meta.get("gen_id", "")
             revised = dalle_meta.get("prompt", "")
 
-            url = await _resolve_image_url(access_token, device_id, file_id, conversation_id)
+            url = await _resolve_image_url(access_token, device_id, file_id, conversation_id, _is_sediment(asset))
             if url:
                 images.append({"url": url, "revised_prompt": revised, "file_id": file_id, "gen_id": gen_id})
 
@@ -420,8 +428,19 @@ async def _handle_image_via_conversation(
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
         "User-Agent": WEB_USER_AGENT,
-        "oai-device-id": device_id,
-        "Accept": "text/event-stream",
+        "OAI-Device-Id": device_id,
+        "OAI-Language": "en-US",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://chatgpt.com",
+        "Referer": "https://chatgpt.com/",
+        "Priority": "u=1, i",
+        "Sec-CH-UA": '"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="99"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"macOS"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
         "openai-sentinel-chat-requirements-token": chat_token,
     }
     if proof_token:
