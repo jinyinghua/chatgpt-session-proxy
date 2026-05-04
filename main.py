@@ -244,6 +244,45 @@ def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL) -> dict:
     }
 
 
+def build_text_conversation_body(messages: list, model: str = DEFAULT_MODEL) -> dict:
+    """Build node-tree body for text conversation via /backend-api/conversation."""
+    # Flatten messages into a single prompt (system + user context)
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+            content = " ".join(texts)
+        if content:
+            if role == "system":
+                parts.append(f"[System] {content}")
+            elif role == "assistant":
+                parts.append(f"[Assistant] {content}")
+            elif role == "user":
+                parts.append(content)
+    
+    prompt = "\n".join(parts) if parts else "hello"
+    msg_id = str(uuid.uuid4())
+    return {
+        "action": "next",
+        "messages": [
+            {
+                "id": msg_id,
+                "author": {"role": "user"},
+                "content": {"content_type": "text", "parts": [prompt]},
+            }
+        ],
+        "parent_message_id": "client-created-root",
+        "model": model,
+        "timezone_offset_min": 420,
+        "timezone": "America/Los_Angeles",
+        "conversation_mode": {"kind": "primary_assistant"},
+        "enable_message_followups": True,
+        "supports_buffering": True,
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  Conversation SSE parser — extracts image URLs
 # ══════════════════════════════════════════════════════════════════════════
@@ -542,33 +581,111 @@ async def chat_completions(req: ChatCompletionRequest):
             log.error(f"[chat] image error: {e}", exc_info=True)
             raise HTTPException(status_code=502, detail=str(e))
 
-    # ── Standard text conversation → codex/responses ─────────────────────
-    prompt = _extract_prompt_from_messages(req.messages)
+    # ── Standard text conversation → /conversation (web endpoint) ──────
+    log.info(f"[chat] text mode via /conversation, model={model}, stream={req.stream}")
+    
+    if req.stream:
+        return await _stream_text_via_conversation(payload={}, headers={}, model=model, messages=[{"role": m.role, "content": m.content} for m in req.messages])
+    else:
+        # Non-streaming: collect full text from stream
+        response_stream = await _stream_text_via_conversation(payload={}, headers={}, model=model, messages=[{"role": m.role, "content": m.content} for m in req.messages])
+        # TODO: implement non-streaming properly
+        raise HTTPException(status_code=501, detail="Non-streaming not yet supported for text mode")
+
+
+async def _stream_text_via_conversation(payload: dict, headers: dict, model: str, messages: list) -> StreamingResponse:
+    """Call /conversation endpoint for text chat and stream as OpenAI format."""
     access_token = await token_manager.get_valid_token()
-
-    payload = {
-        "model": model,
-        "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-        "stream": req.stream,
-        "store": False,
+    device_id = token_manager.device_id
+    chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
+    
+    body = build_text_conversation_body(messages, model)
+    
+    req_headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": WEB_USER_AGENT,
+        "oai-device-id": device_id,
+        "Accept": "text/event-stream",
+        "openai-sentinel-chat-requirements-token": chat_token,
     }
+    if proof_token:
+        req_headers["openai-sentinel-proof-token"] = proof_token
 
-    headers = build_codex_headers(access_token, token_manager.account_id, token_manager.installation_id)
-    # UA now set to Chrome in build_codex_headers
-    # Originator now set in build_codex_headers
-    headers["session_id"] = str(uuid.uuid4())
-
-    payload = normalize_codex_request(payload)
-    log.info(f"[chat] text mode, forwarding to codex/responses, stream={req.stream}")
-
-    try:
-        if req.stream:
-            return await _stream_codex_response_for_chat_completions(payload, headers, req.model)
-        else:
-            return await _non_stream_codex_response(payload, headers, req.model)
-    except Exception as e:
-        log.error(f"[chat] codex error: {e}", exc_info=True)
-        raise HTTPException(status_code=502, detail=str(e))
+    async def generate():
+        cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+        
+        for path in ("/f/conversation", "/conversation"):
+            route = path.split("/")[-1]
+            log.info(f"[text-conv] trying {path}")
+            try:
+                async with curl_requests.AsyncSession(impersonate="chrome110") as session:
+                    resp = await session.post(
+                        f"{BASE_URL}{path}",
+                        json=body, headers=req_headers, stream=True, timeout=300,
+                    )
+                    if resp.status_code != 200:
+                        log.warning(f"[text-conv] {route} returned {resp.status_code}")
+                        if resp.status_code in (403, 404) and path == "/f/conversation":
+                            continue
+                        yield f'data: {json.dumps({"error": {"message": f"Backend {{resp.status_code}}"}})}' + "\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+                    
+                    buffer = ""
+                    async for line in resp.aiter_lines():
+                        decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                        if not decoded.startswith("data: "):
+                            continue
+                        data_str = decoded[6:].strip()
+                        if data_str == "[DONE]":
+                            yield "data: [DONE]\n\n"
+                            return
+                        if not data_str.startswith("{"):
+                            continue
+                        try:
+                            event = json.loads(data_str)
+                        except:
+                            continue
+                        
+                        msg = event.get("message")
+                        if not msg:
+                            continue
+                        if msg.get("author", {}).get("role") in ("user", "system"):
+                            continue
+                        
+                        content = msg.get("content", {})
+                        if content.get("content_type") != "text":
+                            continue
+                        
+                        text_parts = content.get("parts", [])
+                        for text in text_parts:
+                            if text and isinstance(text, str):
+                                chunk = {
+                                    "id": cmpl_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": model,
+                                    "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+                                }
+                                yield "data: " + json.dumps(chunk) + "\n\n"
+                    
+                    # If we got here without [DONE], send it
+                    yield "data: [DONE]\n\n"
+                    return
+            except Exception as e:
+                log.error(f"[text-conv] {route} error: {e}")
+                if path == "/conversation":
+                    yield "data: " + json.dumps({"error": {"message": str(e)}}) + "\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+                continue
+        
+        yield "data: " + json.dumps({"error": {"message": "All conversation endpoints failed"}}) + "\n\n"
+        yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 async def _stream_codex_response_for_chat_completions(payload: dict, headers: dict, model: str) -> StreamingResponse:
@@ -649,7 +766,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                                             "model": model,
                                             "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}]
                                         }
-                                        yield f"data: {json.dumps(chunk)}\n\n"
+                                        yield f"data: {json.dumps(chunk)}" + "\n\n"
                     
                     if not has_output and chunk_count < 2:
                         log.info(f"[chat/completions] Ignored event (no output_text): {data_str[:80]}...")
