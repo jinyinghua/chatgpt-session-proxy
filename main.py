@@ -546,7 +546,7 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
                 if resp.status_code != 200:
                     err = resp.content
                     log.error(f"[chat/completions] Error from backend: {err.decode()[:500]}")
-                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
+                    yield f"data: {json.dumps({'error': {'message': f'Backend returned {resp.status_code}: Auth failed or blocked. {err.decode()[:500]}'}})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
                 
@@ -619,7 +619,7 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
                 if resp.status_code != 200:
                     err = resp.content
                     log.error(f"[responses] Error from backend: {err.decode()[:500]}")
-                    yield f"data: {json.dumps({'error': {'message': f'Backend {resp.status_code}: {err.decode()[:500]}'}})}\n\n"
+                    yield f"data: {json.dumps({'error': {'message': f'Backend returned {resp.status_code}: Auth failed or blocked. {err.decode()[:500]}'}})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
                 

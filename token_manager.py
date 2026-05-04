@@ -88,7 +88,7 @@ class TokenManager:
             payload = self._jwt_payload(self.access_token)
             self.expires_at = payload.get("exp", time.time() + 3600)
 
-    def load_session_from_json(self, raw_json: str | dict) -> dict:
+def load_session_from_json(self, raw_json: str | dict) -> dict:
         """从 JSON 字符串或 dict 加载新 session"""
         if isinstance(raw_json, str):
             data = json.loads(raw_json)
@@ -96,13 +96,17 @@ class TokenManager:
             data = raw_json
 
         self._apply_session(data)
+        
+        # 强制过期时间为0，使得下一次请求必须刷新
+        self.expires_at = 0 
+        
         self._save_to_file()
 
         return {
             "status": "ok",
             "account_id": self.account_id_value,
-            "expires": self.expires_at,
-            "message": f"Session 已保存 (account={self.account_id_value[:8] if self.account_id_value else 'N/A'}...)"
+            "message": f"Session 已保存，下次请求将自动刷新 (account={self.account_id_value[:8] if self.account_id_value else 'N/A'}...)"
+        }...)"
         }
 
     # ── JWT 解析 ──────────────────────────────────────────────────────
