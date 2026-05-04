@@ -464,19 +464,65 @@ async def _handle_image_via_conversation(
             log.error(f"[conv] {path} returned {resp.status_code}: {err_body[:512]}")
             raise Exception(f"conversation returned {resp.status_code}")
 
-        chunks = []
+        # Stream-process SSE: keep reading until we see images or finished
+        images = []
+        chunk_count = 0
         async for line in resp.aiter_lines():
-            if line:
-                decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-                chunks.append(decoded)
+            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+            if not decoded.startswith("data: "):
+                continue
+            data_str = decoded[6:].strip()
+            if not data_str.startswith("{"):
+                continue
+            chunk_count += 1
+            try:
+                event = json.loads(data_str)
+            except:
+                continue
 
-        log.info(f"[conv] received {len(chunks)} SSE chunks")
-        images = await parse_conversation_sse(access_token, device_id, chunks)
+            msg = event.get("message")
+            if not msg:
+                continue
+
+            status = msg.get("status", "")
+            content = msg.get("content", {})
+
+            # Check for images in DALL-E output
+            if content.get("content_type") == "multimodal":
+                for part in content.get("parts", []):
+                    if isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
+                        asset = part.get("asset_pointer", "")
+                        log.info(f"[conv] found image asset: {asset[:80]}...")
+                        file_id = _extract_file_id(asset)
+                        if file_id:
+                            url = await _resolve_image_url(access_token, token_manager.device_id, file_id, "")
+                            images.append({"url": url, "revised_prompt": ""})
+                            break
+
+            # Also check for image_generation_call results
+            for item in (msg.get("metadata", {}).get("attachments", []) or []):
+                if "dalle" in str(item).lower() or "image" in str(item).lower():
+                    log.info(f"[conv] found attachment: {str(item)[:100]}...")
+
+            # Log progress
+            if chunk_count % 10 == 0:
+                log.info(f"[conv] processed {chunk_count} SSE chunks, status={status}, images={len(images)}")
+
+            # Check if generation is finished
+            if status == "finished_successfully":
+                log.info(f"[conv] generation finished after {chunk_count} chunks, images={len(images)}")
+                break
+
+            # If we found images, we can return
+            if images:
+                log.info(f"[conv] found {len(images)} image(s) after {chunk_count} chunks")
+                break
+
+        log.info(f"[conv] total: {chunk_count} chunks, {len(images)} images")
         if images:
             return _build_images_response(images[:n], response_format)
 
-        log.warning(f"[conv] no images found in response")
-        raise Exception("No images in response (check model name or prompt)")
+        raise Exception("No images in response")
 
 
 def _build_images_response(images: list[dict], response_format: str) -> dict:
