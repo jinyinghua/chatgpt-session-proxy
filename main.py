@@ -590,11 +590,14 @@ async def _stream_codex_response_for_chat_completions(payload: dict, headers: di
         log.info("[chat/completions] Starting stream to codex/responses...")
         async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             try:
+                log.info(f'[chat/completions] POST {CODEX_BASE_URL}/responses')
+                log.info(f'[chat/completions] Headers: { {k: (v[:60]+"..." if isinstance(v,str) and len(v)>60 else v) for k,v in headers.items()} }')
                 resp = await session.post(
                     f"{CODEX_BASE_URL}/responses",
                     json=payload, headers=headers, stream=True, timeout=600,
                 )
-                log.info(f"[chat/completions] codex/responses returned status_code={resp.status_code}")
+                resp_headers = dict(resp.headers)
+                log.info(f"[chat/completions] codex/responses status={resp.status_code}, headers={resp_headers}")
                 
                 if resp.status_code != 200:
                     err = resp.content
@@ -663,11 +666,14 @@ async def _stream_codex_response(payload: dict, headers: dict) -> StreamingRespo
         log.info("[responses] Starting direct proxy stream to codex/responses...")
         async with curl_requests.AsyncSession(impersonate="chrome110") as session:
             try:
+                log.info(f'[responses] POST {CODEX_BASE_URL}/responses')
+                log.info(f'[responses] Headers: { {k: (v[:60]+"..." if isinstance(v,str) and len(v)>60 else v) for k,v in headers.items()} }')
                 resp = await session.post(
                     f"{CODEX_BASE_URL}/responses",
                     json=payload, headers=headers, stream=True, timeout=600,
                 )
-                log.info(f"[responses] codex/responses returned status_code={resp.status_code}")
+                resp_headers = dict(resp.headers)
+                log.info(f"[responses] codex/responses status={resp.status_code}, headers={resp_headers}")
                 
                 if resp.status_code != 200:
                     err = resp.content
