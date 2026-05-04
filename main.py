@@ -682,9 +682,41 @@ async def _non_stream_codex_response(payload: dict, headers: dict, model: str) -
 #  Route: POST /v1/responses  (Codex passthrough)
 # ══════════════════════════════════════════════════════════════════════════
 
+
+def normalize_codex_payload(payload: dict) -> dict:
+    """
+    借鉴 Codaze 的请求清洗逻辑:
+    防止第三方客户端发送的非标/内部不支持的字段触发封号或报错
+    """
+    # 1. 移除 Codex 不支持或容易触发风控的生成参数
+    for key in ["max_output_tokens", "max_completion_tokens", "temperature", 
+                "top_p", "truncation", "user", "presence_penalty", "frequency_penalty"]:
+        payload.pop(key, None)
+        
+    # 2. service_tier 仅允许 priority
+    if payload.get("service_tier") != "priority":
+        payload.pop("service_tier", None)
+        
+    # 3. 强制基础配置
+    payload["store"] = False
+    if payload.get("instructions") is None:
+        payload["instructions"] = ""
+        
+    # 4. 工具兼容与别名转换
+    tools = payload.get("tools", [])
+    for tool in tools:
+        t_type = tool.get("type", "")
+        # 将过时的联网工具名清洗为最新标准
+        if t_type in ["web_search_preview", "web_search_preview_2025_03_11"]:
+            tool["type"] = "web_search"
+            
+    return payload
+
 @app.post("/v1/responses")
+
 async def proxy_codex_responses(request: Request):
     payload = await request.json()
+    payload = normalize_codex_payload(payload)  # 注入清洗器
     access_token = await token_manager.get_valid_token()
     device_id = token_manager.device_id
     chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
@@ -717,8 +749,17 @@ async def proxy_codex_responses(request: Request):
                 json=payload, headers=headers, timeout=600,
             )
             if resp.status_code != 200:
-                err = resp.content
-                raise HTTPException(status_code=resp.status_code, detail=err.decode()[:500])
+                err_text = resp.content.decode()[:500]
+                return JSONResponse(
+                    status_code=resp.status_code,
+                    content={
+                        "error": {
+                            "message": f"Upstream Codex API Error: {err_text}",
+                            "type": "upstream_error",
+                            "code": resp.status_code
+                        }
+                    }
+                )
             return resp.json()
 
 
