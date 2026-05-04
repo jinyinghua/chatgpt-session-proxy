@@ -343,13 +343,87 @@ async def _resolve_image_url(access_token: str, device_id: str,
     return ""
 
 
+def _message_signature(msg: dict) -> str:
+    author = msg.get("author", {}).get("role", "?")
+    status = msg.get("status", "?")
+    content_type = msg.get("content", {}).get("content_type", "?")
+    return f"{author}/{status}/{content_type}"
+
+
+async def _extract_images_from_message(
+    access_token: str,
+    device_id: str,
+    msg: dict,
+    conversation_id: str,
+    seen_ids: set[str],
+) -> list[dict]:
+    content = msg.get("content", {}) or {}
+    content_type = content.get("content_type", "")
+    if content_type not in ("multimodal", "multimodal_text"):
+        return []
+
+    images = []
+    for raw_part in content.get("parts", []) or []:
+        if not isinstance(raw_part, dict):
+            continue
+        if raw_part.get("content_type") != "image_asset_pointer":
+            continue
+
+        asset = raw_part.get("asset_pointer", "")
+        file_id = _extract_file_id(asset)
+        if not file_id or file_id in seen_ids:
+            continue
+        if not conversation_id:
+            log.info(f"[conv] saw image asset before conversation_id was known: {asset[:80]}...")
+            continue
+
+        url = await _resolve_image_url(
+            access_token,
+            device_id,
+            file_id,
+            conversation_id,
+            _is_sediment(asset),
+        )
+        if not url:
+            log.warning(
+                f"[conv] failed to resolve image url: file_id={file_id[:16]}... "
+                f"conversation_id={conversation_id[:8]}..."
+            )
+            continue
+
+        seen_ids.add(file_id)
+        dalle_meta = raw_part.get("metadata", {}).get("dalle", {})
+        images.append(
+            {
+                "url": url,
+                "revised_prompt": dalle_meta.get("prompt", ""),
+                "file_id": file_id,
+                "gen_id": dalle_meta.get("gen_id", ""),
+            }
+        )
+
+    return images
+
+
+def _merge_images(base: list[dict], extra: list[dict]) -> list[dict]:
+    seen = {(img.get("file_id"), img.get("url")) for img in base}
+    for img in extra:
+        key = (img.get("file_id"), img.get("url"))
+        if key in seen:
+            continue
+        base.append(img)
+        seen.add(key)
+    return base
+
+
 async def parse_conversation_sse(
     access_token: str, device_id: str,
     chunks: list[str], parent_msg_id: str = "",
 ) -> list[dict]:
     images = []
-    conversation_id = ""
     seen_ids = set()
+    conversation_id = ""
+    events = []
 
     log.info(f"[conv-sse] parsing {len(chunks)} chunks")
     for chunk in chunks:
@@ -366,10 +440,12 @@ async def parse_conversation_sse(
         except json.JSONDecodeError:
             continue
 
+        events.append(event)
         cid = event.get("conversation_id", "")
         if cid:
             conversation_id = cid
 
+    for event in events:
         msg = event.get("message")
         if not msg:
             continue
@@ -379,29 +455,17 @@ async def parse_conversation_sse(
         author_role = msg.get("author", {}).get("role", "")
         if author_role in ("user", "system"):
             continue
-        if msg.get("content", {}).get("content_type") != "multimodal_text":
-            continue
-        if msg.get("status") != "finished_successfully":
-            continue
 
-        for raw_part in msg.get("content", {}).get("parts", []):
-            if isinstance(raw_part, str):
-                continue
-            if raw_part.get("content_type") != "image_asset_pointer":
-                continue
-            asset = raw_part.get("asset_pointer", "")
-            file_id = _extract_file_id(asset)
-            if not file_id or file_id in seen_ids:
-                continue
-            seen_ids.add(file_id)
-
-            dalle_meta = raw_part.get("metadata", {}).get("dalle", {})
-            gen_id = dalle_meta.get("gen_id", "")
-            revised = dalle_meta.get("prompt", "")
-
-            url = await _resolve_image_url(access_token, device_id, file_id, conversation_id, _is_sediment(asset))
-            if url:
-                images.append({"url": url, "revised_prompt": revised, "file_id": file_id, "gen_id": gen_id})
+        event_conversation_id = event.get("conversation_id") or conversation_id
+        found = await _extract_images_from_message(
+            access_token,
+            device_id,
+            msg,
+            event_conversation_id,
+            seen_ids,
+        )
+        if found:
+            _merge_images(images, found)
 
     log.info(f"[conv-sse] found {len(images)} images")
     return images
@@ -464,64 +528,74 @@ async def _handle_image_via_conversation(
             log.error(f"[conv] {path} returned {resp.status_code}: {err_body[:512]}")
             raise Exception(f"conversation returned {resp.status_code}")
 
-        # Stream-process SSE: keep reading until we see images or finished
         images = []
+        seen_ids = set()
+        chunks = []
         chunk_count = 0
+        conversation_id = ""
+        observed_signatures = []
+
         async for line in resp.aiter_lines():
             decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+            if decoded:
+                chunks.append(decoded)
             if not decoded.startswith("data: "):
                 continue
+
             data_str = decoded[6:].strip()
+            if data_str == "[DONE]":
+                break
             if not data_str.startswith("{"):
                 continue
+
             chunk_count += 1
             try:
                 event = json.loads(data_str)
-            except:
+            except Exception:
                 continue
+
+            cid = event.get("conversation_id", "")
+            if cid:
+                conversation_id = cid
 
             msg = event.get("message")
             if not msg:
                 continue
 
-            status = msg.get("status", "")
-            content = msg.get("content", {})
+            signature = _message_signature(msg)
+            if signature not in observed_signatures and len(observed_signatures) < 12:
+                observed_signatures.append(signature)
 
-            # Check for images in DALL-E output
-            if content.get("content_type") == "multimodal":
-                for part in content.get("parts", []):
-                    if isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
-                        asset = part.get("asset_pointer", "")
-                        log.info(f"[conv] found image asset: {asset[:80]}...")
-                        file_id = _extract_file_id(asset)
-                        if file_id:
-                            url = await _resolve_image_url(access_token, token_manager.device_id, file_id, "")
-                            images.append({"url": url, "revised_prompt": ""})
-                            break
+            if chunk_count <= 3 or chunk_count % 10 == 0:
+                log.info(f"[conv] chunk={chunk_count} sig={signature} images={len(images)}")
 
-            # Also check for image_generation_call results
-            for item in (msg.get("metadata", {}).get("attachments", []) or []):
-                if "dalle" in str(item).lower() or "image" in str(item).lower():
-                    log.info(f"[conv] found attachment: {str(item)[:100]}...")
+            if msg.get("author", {}).get("role", "") in ("user", "system"):
+                continue
 
-            # Log progress
-            if chunk_count % 10 == 0:
-                log.info(f"[conv] processed {chunk_count} SSE chunks, status={status}, images={len(images)}")
+            found = await _extract_images_from_message(
+                access_token,
+                device_id,
+                msg,
+                cid or conversation_id,
+                seen_ids,
+            )
+            if found:
+                _merge_images(images, found)
+                log.info(f"[conv] extracted {len(found)} image(s) from live stream, total={len(images)}")
 
-            # Check if generation is finished
-            if status == "finished_successfully":
-                log.info(f"[conv] generation finished after {chunk_count} chunks, images={len(images)}")
-                break
-
-            # If we found images, we can return
-            if images:
-                log.info(f"[conv] found {len(images)} image(s) after {chunk_count} chunks")
-                break
+        if len(images) < n:
+            reparsed = await parse_conversation_sse(access_token, device_id, chunks)
+            if reparsed:
+                before = len(images)
+                _merge_images(images, reparsed)
+                if len(images) > before:
+                    log.info(f"[conv] recovered {len(images) - before} image(s) via batch reparse")
 
         log.info(f"[conv] total: {chunk_count} chunks, {len(images)} images")
         if images:
             return _build_images_response(images[:n], response_format)
 
+        log.warning(f"[conv] no images found; observed signatures={observed_signatures}")
         raise Exception("No images in response")
 
 
