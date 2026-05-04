@@ -44,7 +44,7 @@ WEB_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 )
 DEFAULT_MODEL = "gpt-5.4-mini"
-IMAGE_MODELS = {"gpt-image-1", "gpt-image-2"}
+IMAGE_MODELS = {"gpt-image-1", "gpt-image-2", "auto"}
 
 # ── API Key 鉴权 ───────────────────────────────────────────────────────
 API_KEY = os.getenv("API_KEY", "")
@@ -205,6 +205,9 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
 # ══════════════════════════════════════════════════════════════════════════
 
 def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL) -> dict:
+    # Map image model names to "auto" for upstream (ChatGpt-Image-Studio convention)
+    if model in IMAGE_MODELS:
+        model = "auto"
     """Build the node-tree body for /backend-api/conversation."""
     msg_id = str(uuid.uuid4())
     return {
@@ -348,6 +351,7 @@ async def parse_conversation_sse(
     conversation_id = ""
     seen_ids = set()
 
+    log.info(f"[conv-sse] parsing {len(chunks)} chunks")
     for chunk in chunks:
         if not chunk.startswith("data: "):
             continue
@@ -399,6 +403,7 @@ async def parse_conversation_sse(
             if url:
                 images.append({"url": url, "revised_prompt": revised, "file_id": file_id, "gen_id": gen_id})
 
+    log.info(f"[conv-sse] found {len(images)} images")
     return images
 
 
@@ -446,42 +451,32 @@ async def _handle_image_via_conversation(
     if proof_token:
         headers["openai-sentinel-proof-token"] = proof_token
 
-    for path in ("/f/conversation", "/conversation"):
-        route_label = path.split("/")[-1]
-        log.info(f"[conv] trying {path}")
-        try:
-            async with curl_requests.AsyncSession(impersonate="chrome110") as session:
-                resp = await session.post(
-                    f"{BASE_URL}{path}",
-                    json=body, headers=headers, stream=True, timeout=300,
-                )
-                if resp.status_code != 200:
-                    err_body = resp.content
-                    log.warning(f"[conv] {route_label} returned {resp.status_code}: {err_body[:512]}")
-                    if resp.status_code in (403, 404) and path == "/f/conversation":
-                        continue
-                    raise Exception(f"{route_label} returned {resp.status_code}")
+    # Use /f/conversation only (legacy route for Free accounts)
+    path = "/f/conversation"
+    log.info(f"[conv] POST {BASE_URL}{path}")
+    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
+        resp = await session.post(
+            f"{BASE_URL}{path}",
+            json=body, headers=headers, stream=True, timeout=300,
+        )
+        if resp.status_code != 200:
+            err_body = resp.content
+            log.error(f"[conv] {path} returned {resp.status_code}: {err_body[:512]}")
+            raise Exception(f"conversation returned {resp.status_code}")
 
-                chunks = []
-                async for line in resp.aiter_lines():
-                    if line:
-                        decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-                        chunks.append(decoded)
+        chunks = []
+        async for line in resp.aiter_lines():
+            if line:
+                decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                chunks.append(decoded)
 
-                images = await parse_conversation_sse(access_token, device_id, chunks)
-                if images:
-                    return _build_images_response(images[:n], response_format)
+        log.info(f"[conv] received {len(chunks)} SSE chunks")
+        images = await parse_conversation_sse(access_token, device_id, chunks)
+        if images:
+            return _build_images_response(images[:n], response_format)
 
-                log.warning(f"[conv] {route_label} returned no images, trying next path")
-                if path == "/conversation":
-                    raise Exception("No images generated from either endpoint")
-        except Exception as e:
-            if path == "/conversation":
-                raise
-            log.warning(f"[conv] {route_label} failed: {e}, trying /conversation")
-            continue
-
-    raise Exception("Image generation failed")
+        log.warning(f"[conv] no images found in response")
+        raise Exception("No images in response (check model name or prompt)")
 
 
 def _build_images_response(images: list[dict], response_format: str) -> dict:
@@ -1158,6 +1153,7 @@ async def list_models():
             {"id": "gpt-4o", "object": "model", "owned_by": "chatgpt"},
             {"id": "gpt-5.4-mini", "object": "model", "owned_by": "chatgpt"},
             {"id": "gpt-5.5", "object": "model", "owned_by": "chatgpt"},
+            {"id": "auto", "object": "model", "owned_by": "chatgpt"},
         ],
     }
 
