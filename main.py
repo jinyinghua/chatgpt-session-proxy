@@ -48,11 +48,10 @@ DEFAULT_MODEL = "gpt-5.4-mini"
 IMAGE_MODELS = {"gpt-image-1", "gpt-image-2", "auto"}
 
 # ── API Key 鉴权 ───────────────────────────────────────────────────────
-# Multi-key support: comma-separated keys, any one accepted
+# Multi-key support: comma-separated keys
 _raw_api_keys = os.getenv("API_KEY", "")
 API_KEYS: set[str] = {k.strip() for k in _raw_api_keys.split(",") if k.strip()}
-# Backwards compat: also export API_KEY for any legacy references
-API_KEY = next(iter(API_KEYS), "")
+API_KEY = next(iter(API_KEYS), "")  # backwards compat
 
 # 不需要鉴权的白名单路径
 AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/favicon.ico"}
@@ -1335,145 +1334,177 @@ async def proxy_codex_responses(request: Request):
 #  前端管理页面 & Session 管理 API
 # ══════════════════════════════════════════════════════════════════════════
 
-MANAGER_HTML = """<!DOCTYPE html>
+MANAGER_HTML = """
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ChatGPT Session Proxy - 管理</title>
+<title>ChatGPT Session Proxy</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-         background: #1a1a2e; color: #e0e0e0; min-height: 100vh;
-         display: flex; justify-content: center; align-items: flex-start; padding: 2rem; }
-  .container { max-width: 720px; width: 100%; }
-  h1 { font-size: 1.8rem; margin-bottom: 0.5rem; color: #00d4ff; }
-  .subtitle { color: #888; margin-bottom: 2rem; font-size: 0.9rem; }
-  .card { background: #16213e; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem;
-          border: 1px solid #0f3460; }
-  .card h2 { font-size: 1.1rem; color: #e94560; margin-bottom: 1rem; }
-  textarea { width: 100%; height: 200px; background: #0a0a1a; color: #e0e0e0;
-             border: 1px solid #333; border-radius: 8px; padding: 1rem;
-             font-family: 'Fira Code', monospace; font-size: 0.85rem; resize: vertical; }
-  textarea:focus { outline: none; border-color: #00d4ff; }
-  button { background: #e94560; color: white; border: none; border-radius: 8px;
-           padding: 0.8rem 2rem; font-size: 1rem; cursor: pointer; margin-top: 1rem;
-           transition: background 0.2s; }
-  button:hover { background: #ff6b6b; }
-  button.secondary { background: #0f3460; }
-  button.secondary:hover { background: #1a4a8a; }
-  .status { padding: 1rem; border-radius: 8px; margin-top: 1rem; font-size: 0.9rem; }
-  .status.ok { background: #0d3320; border: 1px solid #00c853; color: #69f0ae; }
-  .status.error { background: #3d0000; border: 1px solid #ff1744; color: #ff8a80; }
-  .status.info { background: #0d1b3e; border: 1px solid #2979ff; color: #82b1ff; }
-  .info-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.5rem 1rem; margin-top: 0.5rem; }
-  .info-label { color: #888; font-weight: 600; }
-  .info-value { color: #e0e0e0; word-break: break-all; }
-  .instructions { background: #0a0a1a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;
-                  font-size: 0.85rem; line-height: 1.6; color: #aaa; }
-  .instructions ol { padding-left: 1.2rem; }
-  .instructions li { margin-bottom: 0.3rem; }
-  .instructions code { background: #1a1a3e; padding: 0.1rem 0.4rem; border-radius: 4px; color: #00d4ff; }
-  .refresh-btn { font-size: 0.85rem; padding: 0.5rem 1rem; margin-left: 0.5rem; }
-  .flex-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh;padding:1.5rem}
+.wrap{max-width:800px;margin:0 auto}
+h1{font-size:1.6rem;color:#00d4ff;margin-bottom:.3rem}
+.sub{color:#888;font-size:.85rem;margin-bottom:1.5rem}
+.card{background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:1.2rem;margin-bottom:1rem}
+.card h2{font-size:1rem;color:#e94560;margin-bottom:.8rem}
+input,textarea{width:100%;background:#0a0a1a;color:#e0e0e0;border:1px solid #333;border-radius:6px;padding:.65rem .8rem;font-family:'Fira Code',monospace;font-size:.85rem}
+input:focus,textarea:focus{outline:none;border-color:#00d4ff}
+textarea{height:160px;resize:vertical}
+button{background:#e94560;color:#fff;border:none;border-radius:6px;padding:.6rem 1.5rem;font-size:.9rem;cursor:pointer;transition:.2s}
+button:hover{background:#ff6b6b}
+button.sm{padding:.4rem .9rem;font-size:.8rem;margin:0}
+button.ghost{background:transparent;border:1px solid #444;color:#aaa}
+button.ghost:hover{border-color:#888;color:#fff}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+.msg{padding:.8rem;border-radius:6px;margin-top:.8rem;font-size:.85rem}
+.msg.ok{background:#0d3320;border:1px solid #00c853;color:#69f0ae}
+.msg.err{background:#3d0000;border:1px solid #ff1744;color:#ff8a80}
+.msg.info{background:#0d1b3e;border:1px solid #2979ff;color:#82b1ff}
+.tbl{width:100%;border-collapse:collapse;margin-top:.5rem;font-size:.85rem}
+.tbl th{text-align:left;color:#888;font-weight:600;padding:.5rem .6rem;border-bottom:1px solid #222}
+.tbl td{padding:.5rem .6rem;border-bottom:1px solid #111;vertical-align:middle}
+.tbl tr:hover{background:rgba(255,255,255,.03)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.dot.green{background:#00c853}.dot.red{background:#ff1744}
+.dot.yellow{background:#ffd600}.dot.gray{background:#555}
+.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:.75rem}
+.badge.ok{background:#0d3320;color:#69f0ae}
+.badge.err{background:#3d0000;color:#ff8a80}
+.badge.off{background:#222;color:#888}
+#loginBox{display:flex;align-items:center;justify-content:center;min-height:70vh}
+#loginBox .card{max-width:360px;width:100%;text-align:center}
+#mainUI{display:none}
+.hdr{position:relative}
+.logout{position:absolute;top:0;right:0;background:transparent;border:1px solid #333;color:#888;font-size:.8rem;padding:.3rem .8rem;cursor:pointer;border-radius:4px}
+.logout:hover{color:#ff6b6b;border-color:#e94560}
+.grid2{display:grid;grid-template-columns:auto 1fr;gap:.3rem .8rem;font-size:.85rem}
+.grid2 span:first-child{color:#888;font-weight:600}
+.hint{color:#666;font-size:.8rem;margin-top:.3rem}
+a{color:#00d4ff}
+.actions button{margin-right:.4rem}
+@media(max-width:600px){.tbl{font-size:.78rem}.tbl td,.tbl th{padding:.4rem}}
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>ChatGPT Session Proxy</h1>
-  <p class="subtitle">管理 Session Token — 粘贴 /api/auth/session 的 JSON 即可</p>
-
-  <div class="card">
-    <h2>使用说明</h2>
-    <div class="instructions">
-      <ol>
-        <li>在浏览器中打开 <a href="https://chatgpt.com" target="_blank" style="color:#00d4ff">chatgpt.com</a> 并登录</li>
-        <li>按 <code>F12</code> 打开开发者工具 → <code>Console</code> 标签页</li>
-        <li>输入 <code>await fetch('/api/auth/session').then(r=>r.json()).then(j=>copy(JSON.stringify(j)))</code></li>
-        <li>JSON 已复制到剪贴板，粘贴到下方即可</li>
-      </ol>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>粘贴 Session JSON</h2>
-    <textarea id="sessionInput" placeholder='{"accessToken":"eyJ...","sessionToken":"eyJ...","account":{"id":"..."},...}'></textarea>
-    <div class="flex-row">
-      <button onclick="submitSession()">保存 Session</button>
-      <button class="secondary" onclick="refreshStatus()">刷新状态</button>
-    </div>
-    <div id="submitResult"></div>
-  </div>
-
-  <div class="card">
-    <h2>当前状态</h2>
-    <div id="statusArea">
-      <p style="color:#888">正在加载...</p>
-    </div>
-  </div>
+<div class="wrap">
+<div id="loginBox">
+<div class="card">
+<h2>LOCK Management Panel</h2>
+<p style="color:#888;font-size:.85rem;margin-bottom:1rem">Enter API Key to login</p>
+<input type="password" id="loginKey" placeholder="API Key" onkeydown="if(event.key==='Enter')doLogin()">
+<button onclick="doLogin()" style="width:100%;margin-top:.8rem">Login</button>
+<div id="loginMsg"></div>
 </div>
-
+</div>
+<div id="mainUI">
+<div class="hdr">
+<h1>ChatGPT Session Proxy</h1>
+<p class="sub">Session Pool / Round-Robin / Auto-Refresh</p>
+<button class="logout" onclick="doLogout()">Logout</button>
+</div>
+<div class="card">
+<div class="grid2">
+<span>Device ID</span><span id="devId" style="word-break:break-all">-</span>
+<span>Sessions</span><span id="sessTotal">-</span>
+<span>Healthy</span><span id="sessHealthy">-</span>
+</div>
+</div>
+<div class="card">
+<h2>Session List</h2>
+<div id="sessTable"><p style="color:#888">Loading...</p></div>
+<div class="row" style="margin-top:.8rem">
+<button class="sm ghost" onclick="loadStatus()">Refresh</button>
+</div>
+</div>
+<div class="card">
+<h2>Add Session</h2>
+<p class="hint" style="margin-bottom:.6rem">On <a href="https://chatgpt.com" target="_blank">chatgpt.com</a> console run
+<code style="background:#1a1a3e;padding:1px 5px;border-radius:3px;color:#00d4ff;font-size:.8rem">await fetch('/api/auth/session').then(r=r.json()).then(j=copy(JSON.stringify(j)))</code></p>
+<textarea id="newSess" placeholder='{"accessToken":"eyJ...","sessionToken":"eyJ...","account":{"id":"..."},...}'></textarea>
+<div class="row" style="margin-top:.6rem">
+<button class="sm" onclick="addSession()">Add</button>
+</div>
+<div id="addMsg"></div>
+</div>
+</div>
+</div>
 <script>
-async function refreshStatus() {
-  const el = document.getElementById('statusArea');
-  try {
-    const r = await fetch('/auth/status');
-    const d = await r.json();
-    if (d.status === 'no_session') {
-      el.innerHTML = '<div class="status error">未配置 Session，请在上方粘贴 JSON</div>';
-      return;
-    }
-    const expDate = new Date(d.expires * 1000);
-    const isExpired = expDate < new Date();
-    const statusClass = isExpired ? 'error' : 'ok';
-    const statusText = isExpired ? '已过期' : '有效';
-    el.innerHTML = `
-      <div class="status ${statusClass}">Token 状态: ${statusText}</div>
-      <div class="info-grid" style="margin-top:1rem">
-        <span class="info-label">Account ID:</span>
-        <span class="info-value">${d.account_id || 'N/A'}</span>
-        <span class="info-label">过期时间:</span>
-        <span class="info-value">${expDate.toLocaleString()} ${isExpired ? '(已过期，下次请求时自动刷新)' : ''}</span>
-        <span class="info-label">设备 ID:</span>
-        <span class="info-value">${d.device_id || 'N/A'}</span>
-      </div>
-    `;
-  } catch(e) {
-    el.innerHTML = `<div class="status error">获取状态失败: ${e.message}</div>`;
-  }
+const K='_pkey';
+function getKey(){return sessionStorage.getItem(K)||''}
+function setKey(v){sessionStorage.setItem(K,v)}
+function clearKey(){sessionStorage.removeItem(K)}
+function hdrs(){return{'Authorization':'Bearer '+getKey(),'Content-Type':'application/json'}}
+function doLogin(){
+const k=document.getElementById('loginKey').value.trim();
+const el=document.getElementById('loginMsg');
+if(!k){el.innerHTML='<div class="msg err">Please enter key</div>';return}
+fetch('/auth/status',{headers:{'Authorization':'Bearer '+k}})
+.then(r=>{if(r.status===401){el.innerHTML='<div class="msg err">Invalid key</div>';return}setKey(k);showMain()})
+.catch(e=>{el.innerHTML='<div class="msg err">Connection failed: '+e.message+'</div>'})
 }
-
-async function submitSession() {
-  const input = document.getElementById('sessionInput').value.trim();
-  const result = document.getElementById('submitResult');
-  if (!input) {
-    result.innerHTML = '<div class="status error">请粘贴 Session JSON</div>';
-    return;
-  }
-  try {
-    const r = await fetch('/auth/session', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: input
-    });
-    const d = await r.json();
-    if (r.ok) {
-      result.innerHTML = `<div class="status ok">${d.message}</div>`;
-      document.getElementById('sessionInput').value = '';
-      refreshStatus();
-    } else {
-      result.innerHTML = `<div class="status error">错误: ${d.detail || JSON.stringify(d)}</div>`;
-    }
-  } catch(e) {
-    result.innerHTML = `<div class="status error">请求失败: ${e.message}</div>`;
-  }
+function doLogout(){clearKey();location.reload()}
+function showMain(){
+document.getElementById('loginBox').style.display='none';
+document.getElementById('mainUI').style.display='block';
+loadStatus();
 }
-
-// 页面加载时刷新状态
-refreshStatus();
+async function loadStatus(){
+const el=document.getElementById('sessTable');
+try{
+const r=await fetch('/auth/status',{headers:hdrs()});
+if(r.status===401){doLogout();return}
+const d=await r.json();
+document.getElementById('devId').textContent=d.device_id||'-';
+document.getElementById('sessTotal').textContent=d.total||0;
+document.getElementById('sessHealthy').textContent=d.healthy||0;
+if(!d.sessions||!d.sessions.length){el.innerHTML='<p style="color:#888">No sessions. Add one below.</p>';return}
+let h='<table class="tbl"><tr><th>Status</th><th>SID</th><th>Account</th><th>Expires</th><th>Error</th><th>Actions</th></tr>';
+for(const s of d.sessions){
+const dis=s.disabled,exp=s.is_expired,hlt=s.is_healthy&&!dis;
+let dot,txt;
+if(dis){dot='gray';txt='Disabled'}
+else if(!hlt){dot='red';txt='Error'}
+else if(exp){dot='yellow';txt='Expired'}
+else{dot='green';txt='OK'}
+const ex=s.expires_at?new Date(s.expires_at*1000).toLocaleTimeString():'-';
+const er=s.last_error?s.last_error.substring(0,30):'-';
+const tb=dis?'<button class="sm ghost" onclick="togS(\''+s.sid+'\',false)">Enable</button>':'<button class="sm ghost" onclick="togS(\''+s.sid+'\',true)">Disable</button>';
+h+='<tr><td><span class="dot '+dot+'"></span><span class="badge '+(dis?'off':hlt?'ok':'err')+'">'+txt+'</span></td>'
++'<td>'+s.sid+'</td><td>'+(s.account_id?s.account_id.substring(0,12)+'...':'-')+'</td>'
++'<td>'+ex+'</td><td title="'+(s.last_error||'')+'">'+er+'</td>'
++'<td class="actions">'+tb+'<button class="sm ghost" onclick="rmS(\''+s.sid+'\')">Del</button></td></tr>';
+}
+h+='</table>';el.innerHTML=h;
+}catch(e){el.innerHTML='<div class="msg err">'+e.message+'</div>'}
+}
+async function addSession(){
+const v=document.getElementById('newSess').value.trim();
+const el=document.getElementById('addMsg');
+if(!v){el.innerHTML='<div class="msg err">Paste JSON first</div>';return}
+try{
+const r=await fetch('/auth/session',{method:'POST',headers:hdrs(),body:v});
+if(r.status===401){doLogout();return}
+const d=await r.json();
+if(r.ok){el.innerHTML='<div class="msg ok">'+d.message+'</div>';document.getElementById('newSess').value='';loadStatus()}
+else{el.innerHTML='<div class="msg err">'+(d.detail||JSON.stringify(d))+'</div>'}
+}catch(e){el.innerHTML='<div class="msg err">'+e.message+'</div>'}
+}
+async function rmS(sid){
+if(!confirm('Delete session '+sid+'?'))return;
+await fetch('/auth/session/'+sid+'/remove',{method:'POST',headers:hdrs()});
+loadStatus();
+}
+async function togS(sid,dis){
+await fetch('/auth/session/'+sid+'/toggle',{method:'POST',headers:hdrs(),body:JSON.stringify({disabled:dis})});
+loadStatus();
+}
+if(getKey())showMain();
 </script>
 </body>
-</html>"""
+</html>
+"""
 
 
 @app.get("/")
@@ -1500,17 +1531,35 @@ async def update_session(request: Request):
 
 @app.get("/auth/status")
 async def auth_status():
-    """返回当前 session 状态"""
-    if not token_manager.access_token and not token_manager.session_token:
-        return {"status": "no_session"}
-
+    """返回所有 session 状态"""
+    sessions = token_manager.get_all_status()
+    healthy = sum(1 for s in sessions if s.get("is_healthy"))
     return {
-        "status": "ok",
-        "account_id": token_manager.account_id,
-        "expires": token_manager.expires_at,
+        "status": "ok" if sessions else "no_session",
         "device_id": token_manager.device_id,
-        "has_session_token": bool(token_manager.session_token),
+        "total": len(sessions),
+        "healthy": healthy,
+        "sessions": sessions,
     }
+
+
+@app.post("/auth/session/{sid}/remove")
+async def remove_session(sid: str):
+    """删除指定 session"""
+    if token_manager.remove_session(sid):
+        return {"status": "ok", "message": f"Session {sid} removed"}
+    raise HTTPException(status_code=404, detail=f"Session {sid} not found")
+
+
+@app.post("/auth/session/{sid}/toggle")
+async def toggle_session(sid: str, request: Request):
+    """启用/禁用指定 session"""
+    body = await request.json()
+    disabled = body.get("disabled", False)
+    if token_manager.toggle_session(sid, disabled):
+        state = "disabled" if disabled else "enabled"
+        return {"status": "ok", "message": f"Session {sid} {state}"}
+    raise HTTPException(status_code=404, detail=f"Session {sid} not found")
 
 
 # ══════════════════════════════════════════════════════════════════════════
