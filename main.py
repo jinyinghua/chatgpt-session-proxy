@@ -850,11 +850,19 @@ def _build_images_response(images: list[dict], response_format: str) -> dict:
     data = []
     for img in images:
         item = {"revised_prompt": img.get("revised_prompt", "")}
+        url = img.get("url", "")
         if response_format == "b64_json":
-            item["url"] = img["url"]
-            item["b64_json"] = ""
+            # Extract base64 from data URI, or return empty if it's a regular URL
+            if url.startswith("data:"):
+                # data:image/png;base64,iVBOR...
+                b64_part = url.split(",", 1)[1] if "," in url else ""
+                item["b64_json"] = b64_part
+                item["url"] = ""
+            else:
+                item["b64_json"] = ""
+                item["url"] = url
         else:
-            item["url"] = img["url"]
+            item["url"] = url
         data.append(item)
     return {"created": int(time.time()), "data": data}
 
