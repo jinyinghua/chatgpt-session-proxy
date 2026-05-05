@@ -667,10 +667,10 @@ async def _handle_image_via_conversation(
                         async_mode = True
                         log.info(f"[conv] async_status={async_status}, will poll after stream")
 
-            # Detect moderation blocking during stream
-            if event.get("moderation_state") == "blocked":
-                log.warning("[conv] moderation blocked in stream")
-                raise Exception("Content policy violation: moderation blocked")
+                    # Detect moderation blocking during stream
+                    if event.get("moderation_state") == "blocked":
+                        log.warning("[conv] moderation blocked in stream")
+                        raise Exception("Content policy violation: moderation blocked")
 
                     msg = event.get("message")
                     if not msg:
