@@ -1440,13 +1440,29 @@ function getKey(){return sessionStorage.getItem(K)||''}
 function setKey(v){sessionStorage.setItem(K,v)}
 function clearKey(){sessionStorage.removeItem(K)}
 function hdrs(){return{'Authorization':'Bearer '+getKey(),'Content-Type':'application/json'}}
-function doLogin(){
-const k=document.getElementById('loginKey').value.trim();
-const el=document.getElementById('loginMsg');
-if(!k){el.innerHTML='<div class="msg err">Please enter key</div>';return}
-fetch('/auth/login-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})})
-.then(r=>{if(r.status===401){el.innerHTML='<div class="msg err">Invalid key</div>';return}setKey(k);showMain()})
-.catch(e=>{el.innerHTML='<div class="msg err">Connection failed: '+e.message+'</div>'})
+async function doLogin() {
+const k = document.getElementById('loginKey').value.trim();
+const el = document.getElementById('loginMsg');
+if (!k) {
+  el.innerHTML = '<div class="msg err">Please enter key</div>';
+  return;
+}
+try {
+  const r = await fetch('/auth/login-check', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ key: k })
+  });
+  const text = await r.text();
+  if (!r.ok) {
+    el.innerHTML = `<div class="msg err">Login failed: ${r.status} ${text}</div>`;
+    return;
+  }
+  setKey(k);
+  showMain();
+} catch (e) {
+  el.innerHTML = `<div class="msg err">Connection failed: ${e.message}</div>`;
+}
 }
 function doLogout(){clearKey();location.reload()}
 function showMain(){
@@ -1505,6 +1521,8 @@ await fetch('/auth/session/'+sid+'/toggle',{method:'POST',headers:hdrs(),body:JS
 loadStatus();
 }
 if(getKey())showMain();
+
+window.doLogin = doLogin;
 </script>
 </body>
 </html>
