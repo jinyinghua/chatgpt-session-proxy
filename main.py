@@ -1425,7 +1425,7 @@ a{color:#00d4ff}
 <div class="card">
 <h2>Add Session</h2>
 <p class="hint" style="margin-bottom:.6rem">On <a href="https://chatgpt.com" target="_blank">chatgpt.com</a> console run
-<code style="background:#1a1a3e;padding:1px 5px;border-radius:3px;color:#00d4ff;font-size:.8rem">await fetch('/api/auth/session').then(r=r.json()).then(j=copy(JSON.stringify(j)))</code></p>
+<code style="background:#1a1a3e;padding:1px 5px;border-radius:3px;color:#00d4ff;font-size:.8rem">await fetch('/api/auth/session').then(r=>r.json()).then(j=>copy(JSON.stringify(j)))</code></p>
 <textarea id="newSess" placeholder='{"accessToken":"eyJ...","sessionToken":"eyJ...","account":{"id":"..."},...}'></textarea>
 <div class="row" style="margin-top:.6rem">
 <button class="sm" onclick="addSession()">Add</button>
@@ -1435,94 +1435,140 @@ a{color:#00d4ff}
 </div>
 </div>
 <script>
-const K='_pkey';
-function getKey(){return sessionStorage.getItem(K)||''}
-function setKey(v){sessionStorage.setItem(K,v)}
-function clearKey(){sessionStorage.removeItem(K)}
-function hdrs(){return{'Authorization':'Bearer '+getKey(),'Content-Type':'application/json'}}
-async function doLogin() {
-const k = document.getElementById('loginKey').value.trim();
-const el = document.getElementById('loginMsg');
-if (!k) {
-  el.innerHTML = '<div class="msg err">Please enter key</div>';
-  return;
-}
-try {
-  const r = await fetch('/auth/login-check', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ key: k })
+(function() {
+  const K = '_pkey';
+  const getKey = () => sessionStorage.getItem(K) || '';
+  const setKey = (v) => sessionStorage.setItem(K, v);
+  const clearKey = () => sessionStorage.removeItem(K);
+  const hdrs = () => ({
+    'Authorization': 'Bearer ' + getKey(),
+    'Content-Type': 'application/json'
   });
-  const text = await r.text();
-  if (!r.ok) {
-    el.innerHTML = `<div class="msg err">Login failed: ${r.status} ${text}</div>`;
-    return;
-  }
-  setKey(k);
-  showMain();
-} catch (e) {
-  el.innerHTML = `<div class="msg err">Connection failed: ${e.message}</div>`;
-}
-}
-function doLogout(){clearKey();location.reload()}
-function showMain(){
-document.getElementById('loginBox').style.display='none';
-document.getElementById('mainUI').style.display='block';
-loadStatus();
-}
-async function loadStatus(){
-const el=document.getElementById('sessTable');
-try{
-const r=await fetch('/auth/status',{headers:hdrs()});
-if(r.status===401){doLogout();return}
-const d=await r.json();
-document.getElementById('devId').textContent=d.device_id||'-';
-document.getElementById('sessTotal').textContent=d.total||0;
-document.getElementById('sessHealthy').textContent=d.healthy||0;
-if(!d.sessions||!d.sessions.length){el.innerHTML='<p style="color:#888">No sessions. Add one below.</p>';return}
-let h='<table class="tbl"><tr><th>Status</th><th>SID</th><th>Account</th><th>Expires</th><th>Error</th><th>Actions</th></tr>';
-for(const s of d.sessions){
-const dis=s.disabled,exp=s.is_expired,hlt=s.is_healthy&&!dis;
-let dot,txt;
-if(dis){dot='gray';txt='Disabled'}
-else if(!hlt){dot='red';txt='Error'}
-else if(exp){dot='yellow';txt='Expired'}
-else{dot='green';txt='OK'}
-const ex=s.expires_at?new Date(s.expires_at*1000).toLocaleTimeString():'-';
-const er=s.last_error?s.last_error.substring(0,30):'-';
-const tb=dis?'<button class="sm ghost" onclick="togS(\''+s.sid+'\',false)">Enable</button>':'<button class="sm ghost" onclick="togS(\''+s.sid+'\',true)">Disable</button>';
-h+='<tr><td><span class="dot '+dot+'"></span><span class="badge '+(dis?'off':hlt?'ok':'err')+'">'+txt+'</span></td>'
-+'<td>'+s.sid+'</td><td>'+(s.account_id?s.account_id.substring(0,12)+'...':'-')+'</td>'
-+'<td>'+ex+'</td><td title="'+(s.last_error||'')+'">'+er+'</td>'
-+'<td class="actions">'+tb+'<button class="sm ghost" onclick="rmS(\''+s.sid+'\')">Del</button></td></tr>';
-}
-h+='</table>';el.innerHTML=h;
-}catch(e){el.innerHTML='<div class="msg err">'+e.message+'</div>'}
-}
-async function addSession(){
-const v=document.getElementById('newSess').value.trim();
-const el=document.getElementById('addMsg');
-if(!v){el.innerHTML='<div class="msg err">Paste JSON first</div>';return}
-try{
-const r=await fetch('/auth/session',{method:'POST',headers:hdrs(),body:v});
-if(r.status===401){doLogout();return}
-const d=await r.json();
-if(r.ok){el.innerHTML='<div class="msg ok">'+d.message+'</div>';document.getElementById('newSess').value='';loadStatus()}
-else{el.innerHTML='<div class="msg err">'+(d.detail||JSON.stringify(d))+'</div>'}
-}catch(e){el.innerHTML='<div class="msg err">'+e.message+'</div>'}
-}
-async function rmS(sid){
-if(!confirm('Delete session '+sid+'?'))return;
-await fetch('/auth/session/'+sid+'/remove',{method:'POST',headers:hdrs()});
-loadStatus();
-}
-async function togS(sid,dis){
-await fetch('/auth/session/'+sid+'/toggle',{method:'POST',headers:hdrs(),body:JSON.stringify({disabled:dis})});
-loadStatus();
-}
-if(getKey())showMain();
 
-window.doLogin = doLogin;
+  window.doLogin = async function() {
+    const k = document.getElementById('loginKey').value.trim();
+    const el = document.getElementById('loginMsg');
+    if (!k) {
+      el.innerHTML = '<div class="msg err">Please enter key</div>';
+      return;
+    }
+    el.innerHTML = '<div class="msg info">Logging in...</div>';
+    try {
+      const r = await fetch('/auth/login-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: k })
+      });
+      if (r.status === 401) {
+        el.innerHTML = '<div class="msg err">Invalid API Key</div>';
+        return;
+      }
+      if (!r.ok) {
+        const txt = await r.text();
+        el.innerHTML = `<div class="msg err">Error: ${r.status} ${txt}</div>`;
+        return;
+      }
+      setKey(k);
+      showMain();
+    } catch (e) {
+      el.innerHTML = `<div class="msg err">Connection failed: ${e.message}</div>`;
+      console.error(e);
+    }
+  };
+
+  window.doLogout = function() {
+    clearKey();
+    location.reload();
+  };
+
+  function showMain() {
+    document.getElementById('loginBox').style.display = 'none';
+    document.getElementById('mainUI').style.display = 'block';
+    loadStatus();
+  }
+
+  window.loadStatus = async function() {
+    const el = document.getElementById('sessTable');
+    try {
+      const r = await fetch('/auth/status', { headers: hdrs() });
+      if (r.status === 401) { doLogout(); return; }
+      const d = await r.json();
+      document.getElementById('devId').textContent = d.device_id || '-';
+      document.getElementById('sessTotal').textContent = d.total || 0;
+      document.getElementById('sessHealthy').textContent = d.healthy || 0;
+      
+      if (!d.sessions || !d.sessions.length) {
+        el.innerHTML = '<p style="color:#888;padding:1rem">No sessions in pool. Add one below.</p>';
+        return;
+      }
+
+      let h = '<table class="tbl"><tr><th>Status</th><th>SID</th><th>Account</th><th>Expires</th><th>Error</th><th>Actions</th></tr>';
+      for (const s of d.sessions) {
+        const dis = s.disabled, exp = s.is_expired, hlt = s.is_healthy && !dis;
+        let dot, txt, bCls;
+        if (dis) { dot = 'gray'; txt = 'Disabled'; bCls = 'off'; }
+        else if (!hlt) { dot = 'red'; txt = 'Error'; bCls = 'err'; }
+        else if (exp) { dot = 'yellow'; txt = 'Expired'; bCls = 'err'; }
+        else { dot = 'green'; txt = 'OK'; bCls = 'ok'; }
+
+        const ex = s.expires_at ? new Date(s.expires_at * 1000).toLocaleTimeString() : '-';
+        const er = s.last_error ? s.last_error.substring(0, 30) : '-';
+        const tb = dis 
+          ? `<button class="sm ghost" onclick="togS('${s.sid}',false)">Enable</button>`
+          : `<button class="sm ghost" onclick="togS('${s.sid}',true)">Disable</button>`;
+        
+        h += `<tr>
+          <td><span class="dot ${dot}"></span><span class="badge ${bCls}">${txt}</span></td>
+          <td><code>${s.sid}</code></td>
+          <td>${s.account_id ? s.account_id.substring(0, 8) + '...' : '-'}</td>
+          <td>${ex}</td>
+          <td title="${s.last_error || ''}">${er}</td>
+          <td class="actions">${tb}<button class="sm ghost" onclick="rmS('${s.sid}')">Del</button></td>
+        </tr>`;
+      }
+      h += '</table>';
+      el.innerHTML = h;
+    } catch (e) {
+      el.innerHTML = `<div class="msg err">Failed to load status: ${e.message}</div>`;
+    }
+  };
+
+  window.addSession = async function() {
+    const v = document.getElementById('newSess').value.trim();
+    const el = document.getElementById('addMsg');
+    if (!v) { el.innerHTML = '<div class="msg err">Please paste JSON</div>'; return; }
+    try {
+      const r = await fetch('/auth/session', { method: 'POST', headers: hdrs(), body: v });
+      if (r.status === 401) { doLogout(); return; }
+      const d = await r.json();
+      if (r.ok) {
+        el.innerHTML = `<div class="msg ok">${d.message}</div>`;
+        document.getElementById('newSess').value = '';
+        loadStatus();
+      } else {
+        el.innerHTML = `<div class="msg err">${d.detail || JSON.stringify(d)}</div>`;
+      }
+    } catch (e) { el.innerHTML = `<div class="msg err">${e.message}</div>`; }
+  };
+
+  window.rmS = async function(sid) {
+    if (!confirm(`Delete session ${sid}?`)) return;
+    await fetch(`/auth/session/${sid}/remove`, { method: 'POST', headers: hdrs() });
+    loadStatus();
+  };
+
+  window.togS = async function(sid, dis) {
+    await fetch(`/auth/session/${sid}/toggle`, { 
+      method: 'POST', 
+      headers: hdrs(), 
+      body: JSON.stringify({ disabled: dis }) 
+    });
+    loadStatus();
+  };
+
+  // Init
+  if (getKey()) showMain();
+})();
 </script>
 </body>
 </html>
