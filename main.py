@@ -50,7 +50,7 @@ IMAGE_MODELS = {"gpt-image-1", "gpt-image-2", "auto"}
 API_KEY = os.getenv("API_KEY", "")
 
 # 不需要鉴权的白名单路径
-AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/auth/session", "/auth/status"}
+AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/auth/session", "/auth/status", "/favicon.ico"}
 
 
 # ── App ─────────────────────────────────────────────────────────────────
@@ -344,9 +344,11 @@ async def _resolve_image_url(access_token: str, device_id: str,
 
 
 def _message_signature(msg: dict) -> str:
-    author = msg.get("author", {}).get("role", "?")
+    author_obj = msg.get("author") or {}
+    author = author_obj.get("role", "?")
     status = msg.get("status", "?")
-    content_type = msg.get("content", {}).get("content_type", "?")
+    content_obj = msg.get("content") or {}
+    content_type = content_obj.get("content_type", "?")
     return f"{author}/{status}/{content_type}"
 
 
@@ -619,12 +621,20 @@ async def _handle_image_via_conversation(
                     chunk_count += 1
                     try:
                         event = json.loads(data_str)
-                    except Exception:
+                    except Exception as e:
+                        log.warning(f"[conv] json decode error: {e}, data: {data_str[:200]}")
                         continue
 
                     cid = event.get("conversation_id", "")
                     if cid:
                         conversation_id = cid
+
+                    # Detect top-level error (e.g. rate limits, ban, policy)
+                    if event.get("error"):
+                        err_val = event.get("error")
+                        err_msg = err_val if isinstance(err_val, str) else json.dumps(err_val)
+                        log.warning(f"[conv] Upstream error in stream: {err_msg}")
+                        raise Exception(f"Upstream error: {err_msg}")
 
                     async_status = event.get("async_status")
                     if async_status and isinstance(async_status, int) and async_status > 0:
@@ -677,8 +687,79 @@ async def _handle_image_via_conversation(
 
                 log.warning(f"[conv] {route_label} no images found; observed signatures={observed_signatures}")
                 
-                # If path was /f/conversation but no images and no errors, maybe /conversation will work?
-                # Usually no images means prompt refusal, but let's just raise to match previous behavior
+                # When no images found, try to extract useful info from the stream
+                # 1) Look for assistant text (rate limit message, refusal, etc.)
+                # 2) Look for message events of ANY role to understand stream format
+                # 3) Dump raw events for debugging if nothing matched
+                assistant_text = ""
+                all_msg_signatures = []
+                raw_event_types = set()
+                raw_event_keys = set()
+                error_events = []
+                
+                for chunk in chunks:
+                    if not chunk.startswith("data: "):
+                        continue
+                    data_str = chunk[6:].strip()
+                    if not data_str.startswith("{"):
+                        continue
+                    try:
+                        evt = json.loads(data_str)
+                    except Exception:
+                        continue
+                    
+                    # Collect top-level keys and types for diagnostics
+                    evt_type = evt.get("type", "")
+                    if evt_type:
+                        raw_event_types.add(evt_type)
+                    for k in evt.keys():
+                        raw_event_keys.add(k)
+                    
+                    # Check for top-level error
+                    if evt.get("error"):
+                        error_events.append(evt["error"] if isinstance(evt["error"], str) else json.dumps(evt["error"]))
+                    
+                    # Check for moderation_state / policy rejection
+                    if evt.get("moderation_state") == "blocked":
+                        error_events.append("moderation_blocked")
+                    
+                    m = evt.get("message", {})
+                    if not m:
+                        continue
+                    
+                    # Record ALL message signatures (not just non-user ones)
+                    sig = _message_signature(m)
+                    all_msg_signatures.append(f"{sig}(role={m.get('author',{}).get('role','?')})")
+                    
+                    # Extract assistant text
+                    if (m.get("author") or {}).get("role") == "assistant":
+                        c = m.get("content") or {}
+                        if c.get("content_type") == "text":
+                            parts = c.get("parts", [])
+                            if parts and isinstance(parts[0], str):
+                                assistant_text = parts[0]
+                
+                # Report what we found
+                if all_msg_signatures:
+                    log.warning(f"[conv] ALL msg signatures: {all_msg_signatures[:20]}")
+                else:
+                    log.warning(f"[conv] ZERO message events in stream; top-level keys={raw_event_keys}")
+                    if raw_event_types:
+                        log.warning(f"[conv] event types seen: {raw_event_types}")
+                    # Dump first 3 raw data events for diagnosis
+                    data_events = [c[6:].strip() for c in chunks if c.startswith("data: ") and c[6:].strip().startswith("{")]
+                    for i, de in enumerate(data_events[:3]):
+                        log.warning(f"[conv] raw event[{i}]: {de[:500]}")
+                
+                if error_events:
+                    err_summary = "; ".join(str(e)[:200] for e in error_events[:3])
+                    log.warning(f"[conv] upstream errors: {err_summary}")
+                    raise Exception(f"Upstream error: {err_summary}")
+                
+                if assistant_text:
+                    log.warning(f"[conv] assistant text: {assistant_text[:200]}")
+                    raise Exception(f"Assistant response: {assistant_text[:500]}")
+
                 if path == "/conversation":
                     raise Exception("No images in response")
                 raise Exception("No images in response")
