@@ -15,7 +15,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SESSION_FILE = Path(os.getenv("SESSION_FILE", "sessions.json"))
+# Persistent storage directory (mount as Docker volume for persistence)
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SESSION_FILE = Path(os.getenv("SESSION_FILE", str(DATA_DIR / "sessions.json")))
 _INSTALLATION_ID_NAMESPACE = _uuid.UUID("6d0ab975-7f88-4ef4-9466-3f9047d5064d")
 
 

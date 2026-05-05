@@ -48,10 +48,14 @@ DEFAULT_MODEL = "gpt-5.4-mini"
 IMAGE_MODELS = {"gpt-image-1", "gpt-image-2", "auto"}
 
 # ── API Key 鉴权 ───────────────────────────────────────────────────────
-API_KEY = os.getenv("API_KEY", "")
+# Multi-key support: comma-separated keys, any one accepted
+_raw_api_keys = os.getenv("API_KEY", "")
+API_KEYS: set[str] = {k.strip() for k in _raw_api_keys.split(",") if k.strip()}
+# Backwards compat: also export API_KEY for any legacy references
+API_KEY = next(iter(API_KEYS), "")
 
 # 不需要鉴权的白名单路径
-AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/auth/session", "/auth/status", "/favicon.ico"}
+AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/favicon.ico"}
 
 
 # ── App ─────────────────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     # 如果没有配置 API_KEY，跳过鉴权（开发模式）
-    if not API_KEY:
+    if not API_KEYS:
         return await call_next(request)
 
     # 提取客户端传来的 key
@@ -94,7 +98,7 @@ async def auth_middleware(request: Request, call_next):
         client_key = request.query_params.get("key", "").strip()
 
     # 验证
-    if not client_key or client_key != API_KEY:
+    if not client_key or client_key not in API_KEYS:
         log.warning(f"[auth] rejected {request.method} {path} — invalid or missing API key")
         return JSONResponse(
             status_code=401,

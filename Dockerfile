@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# 创建持久化数据目录 (建议挂载 volume: /app/data)
+RUN mkdir -p /app/data
+
 # PaaS 平台通常会覆盖这个环境变量，提供默认值 8080
 ENV PORT=8080
 
