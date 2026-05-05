@@ -478,7 +478,7 @@ async def _poll_conversation_for_images(access_token: str, device_id: str, conve
         "OAI-Device-Id": device_id,
     }
 
-    poll_max_wait = 60
+    poll_max_wait = 120
     deadline = time.time() + poll_max_wait
     poll_attempt = 0
     seen_ids = set()
@@ -559,7 +559,7 @@ async def _poll_conversation_for_images(access_token: str, device_id: str, conve
 
             log.info(f"[poll] attempt {poll_attempt}: no images yet, continuing...")
 
-    raise Exception("Timed out waiting for async image generation (60s)")
+    raise Exception("Timed out waiting for async image generation (120s)")
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Image generation core
