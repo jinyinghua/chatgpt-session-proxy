@@ -471,52 +471,72 @@ async def parse_conversation_sse(
 
     log.info(f"[conv-sse] found {len(images)} images")
     return images
-
-
-
 async def _poll_conversation_for_images(access_token: str, device_id: str, conversation_id: str, parent_msg_id: str = "") -> list[dict]:
     headers = {
         "Authorization": f"Bearer {access_token}",
         "User-Agent": WEB_USER_AGENT,
         "OAI-Device-Id": device_id,
     }
-    
-    poll_interval = 3
-    poll_max_wait = 300
-    deadline = time.time() + poll_max_wait
 
+    poll_max_wait = 60
+    deadline = time.time() + poll_max_wait
+    poll_attempt = 0
     seen_ids = set()
 
     async with curl_requests.AsyncSession(impersonate="chrome110") as session:
         while time.time() < deadline:
-            await asyncio.sleep(poll_interval)
-            log.info(f"[poll] checking conversation {conversation_id}")
+            poll_attempt += 1
+            wait = 1 if poll_attempt == 1 else 3
+            await asyncio.sleep(wait)
+            log.info(f"[poll] attempt {poll_attempt} checking conversation {conversation_id}")
             resp = await session.get(f"{BASE_URL}/conversation/{conversation_id}", headers=headers)
             if resp.status_code != 200:
                 err_text = resp.content.decode()[:200]
                 log.warning(f"[poll] GET conversation returned {resp.status_code}: {err_text}")
+                if resp.status_code in (401, 403):
+                    raise Exception(f"Poll auth error: {resp.status_code}")
                 continue
-            
+
             try:
                 conv = resp.json()
             except Exception as e:
                 log.warning(f"[poll] decode error: {e}")
                 continue
-            
+
             mapping = conv.get("mapping", {})
             images = []
-            
+            refusal_text = ""
+            error_found = False
+
             for node_id, node in mapping.items():
                 msg = node.get("message")
                 if not msg:
                     continue
                 if parent_msg_id and msg.get("id") == parent_msg_id:
                     continue
-                
+
                 author_role = msg.get("author", {}).get("role", "")
                 if author_role in ("user", "system"):
                     continue
-                
+
+                # Detect policy refusal in assistant messages
+                if author_role == "assistant":
+                    content = msg.get("content") or {}
+                    if msg.get("status") == "finished_successfully" and content.get("content_type") == "text":
+                        parts = content.get("parts", [])
+                        if parts and isinstance(parts[0], str):
+                            text_content = parts[0]
+                            lower_text = text_content.lower()
+                            refusal_keywords = ["content polic", "violat", "got it wrong", "sorry", "can't create", "cannot create", "unable to generate", "inappropriate"]
+                            if any(kw in lower_text for kw in refusal_keywords):
+                                refusal_text = text_content
+                                log.warning(f"[poll] policy refusal detected: {text_content[:200]}")
+                    msg_meta = msg.get("metadata") or {}
+                    if msg_meta.get("is_blocked") or msg_meta.get("flagged"):
+                        error_found = True
+                        log.warning(f"[poll] message flagged/blocked in metadata")
+
+                # Still try to extract images
                 found = await _extract_images_from_message(
                     access_token,
                     device_id,
@@ -526,14 +546,20 @@ async def _poll_conversation_for_images(access_token: str, device_id: str, conve
                 )
                 if found:
                     _merge_images(images, found)
-            
-            if images:
-                log.info(f"[poll] found {len(images)} images via polling")
-                return images
-                
-            log.info(f"[poll] still waiting for images...")
 
-    raise Exception("Timed out waiting for async image generation")
+            if images:
+                log.info(f"[poll] found {len(images)} images after {poll_attempt} attempts")
+                return images
+
+            if refusal_text:
+                raise Exception(f"Content policy refusal: {refusal_text[:300]}")
+
+            if error_found:
+                raise Exception("Image generation blocked by content policy")
+
+            log.info(f"[poll] attempt {poll_attempt}: no images yet, continuing...")
+
+    raise Exception("Timed out waiting for async image generation (60s)")
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Image generation core
