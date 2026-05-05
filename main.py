@@ -12,6 +12,7 @@ Requires env vars: SESSION_TOKEN_0, SESSION_TOKEN_1, OAI_DEVICE_ID, API_KEY
 """
 
 import os
+import base64
 import json
 import uuid
 import asyncio
@@ -303,44 +304,87 @@ def _is_sediment(asset_pointer: str) -> bool:
 
 async def _resolve_image_url(access_token: str, device_id: str,
                               file_id: str, conversation_id: str, is_sediment: bool = False) -> str:
+    """Resolve file_id → download the actual image bytes → return as data URI.
+    This ensures clients don't need auth to access images."""
     headers = {
         "Authorization": f"Bearer {access_token}",
         "User-Agent": WEB_USER_AGENT,
         "OAI-Device-Id": device_id,
     }
     async with curl_requests.AsyncSession(impersonate="chrome110") as session:
+        # Step 1: resolve the download URL
+        download_url = ""
         if is_sediment:
-            # sediment:// uses attachment API
             url = f"{BASE_URL}/conversation/{conversation_id}/attachment/{file_id}/download"
         else:
-            # file-service:// uses files API
             url = f"{BASE_URL}/files/download/{file_id}?conversation_id={conversation_id}&inline=false"
-        
+
         resp = await session.get(url, headers=headers, allow_redirects=False)
         if resp.status_code in (301, 302, 303, 307, 308):
-            return resp.headers.get("Location", "")
-        if resp.status_code == 200:
+            download_url = resp.headers.get("Location", "")
+        elif resp.status_code == 200:
             try:
-                return resp.json().get("download_url", "")
-            except Exception:
-                pass
-        
-        # Fallback: try the other URL format
-        if is_sediment:
-            fallback_url = f"{BASE_URL}/files/{file_id}/download"
-        else:
-            fallback_url = f"{BASE_URL}/attachments/{file_id}"
-        
-        resp2 = await session.get(fallback_url, headers=headers, allow_redirects=False)
-        if resp2.status_code in (301, 302, 303, 307, 308):
-            return resp2.headers.get("Location", "")
-        if resp2.status_code == 200:
-            try:
-                return resp2.json().get("download_url", "")
+                download_url = resp.json().get("download_url", "")
             except Exception:
                 pass
 
-    return ""
+        if not download_url:
+            # Fallback
+            if is_sediment:
+                fallback_url = f"{BASE_URL}/files/{file_id}/download"
+            else:
+                fallback_url = f"{BASE_URL}/attachments/{file_id}"
+            resp2 = await session.get(fallback_url, headers=headers, allow_redirects=False)
+            if resp2.status_code in (301, 302, 303, 307, 308):
+                download_url = resp2.headers.get("Location", "")
+            elif resp2.status_code == 200:
+                try:
+                    download_url = resp2.json().get("download_url", "")
+                except Exception:
+                    pass
+
+        # Also handle the estuary content URL pattern from asset_pointer
+        if not download_url:
+            # Check if the asset_pointer itself contains an estuary URL we can try
+            log.warning(f"[conv] could not resolve download URL for file_id={file_id[:20]}...")
+            return ""
+
+        # Step 2: download the actual image bytes
+        log.info(f"[conv] downloading image from: {download_url[:80]}...")
+        try:
+            # For estuary/chatgpt.com URLs, we need auth headers
+            # For CDN URLs (S3 etc), no auth needed
+            dl_headers = {}
+            if "chatgpt.com" in download_url or "openai" in download_url:
+                dl_headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": WEB_USER_AGENT,
+                    "OAI-Device-Id": device_id,
+                }
+
+            img_resp = await session.get(download_url, headers=dl_headers)
+            if img_resp.status_code == 200:
+                content_type = img_resp.headers.get("content-type", "image/png")
+                # Normalize content type for data URI
+                if "jpeg" in content_type or "jpg" in content_type:
+                    mime = "image/jpeg"
+                elif "webp" in content_type:
+                    mime = "image/webp"
+                else:
+                    mime = "image/png"
+
+                img_bytes = img_resp.content
+                b64 = base64.b64encode(img_bytes).decode("ascii")
+                data_uri = f"data:{mime};base64,{b64}"
+                log.info(f"[conv] image downloaded: {len(img_bytes)} bytes, mime={mime}")
+                return data_uri
+            else:
+                log.warning(f"[conv] image download failed: status={img_resp.status_code}")
+                # Return the URL anyway as last resort - at least it has auth info
+                return download_url
+        except Exception as e:
+            log.warning(f"[conv] image download error: {e}")
+            return download_url if download_url else ""
 
 
 def _message_signature(msg: dict) -> str:
