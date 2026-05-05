@@ -54,7 +54,7 @@ API_KEYS: set[str] = {k.strip() for k in _raw_api_keys.split(",") if k.strip()}
 API_KEY = next(iter(API_KEYS), "")  # backwards compat
 
 # 不需要鉴权的白名单路径
-AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/favicon.ico"}
+AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/favicon.ico", "/auth/login-check"}
 
 
 # ── App ─────────────────────────────────────────────────────────────────
@@ -1440,7 +1440,7 @@ function doLogin(){
 const k=document.getElementById('loginKey').value.trim();
 const el=document.getElementById('loginMsg');
 if(!k){el.innerHTML='<div class="msg err">Please enter key</div>';return}
-fetch('/auth/status',{headers:{'Authorization':'Bearer '+k}})
+fetch('/auth/login-check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:k})})
 .then(r=>{if(r.status===401){el.innerHTML='<div class="msg err">Invalid key</div>';return}setKey(k);showMain()})
 .catch(e=>{el.innerHTML='<div class="msg err">Connection failed: '+e.message+'</div>'})
 }
@@ -1527,6 +1527,16 @@ async def update_session(request: Request):
     result = token_manager.load_session_from_json(body)
     log.info(f"[auth] Session 已更新: account_id={token_manager.account_id[:8]}...")
     return result
+
+
+@app.post("/auth/login-check")
+async def login_check(request: Request):
+    """Validate API key without exposing session data. Used by frontend login."""
+    body = await request.json()
+    key = body.get("key", "")
+    if API_KEYS and key not in API_KEYS:
+        return JSONResponse(status_code=401, content={"error": "invalid_key"})
+    return {"status": "ok"}
 
 
 @app.get("/auth/status")
