@@ -54,7 +54,7 @@ API_KEYS: set[str] = {k.strip() for k in _raw_api_keys.split(",") if k.strip()}
 API_KEY = next(iter(API_KEYS), "")  # backwards compat
 
 # 不需要鉴权的白名单路径
-AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/favicon.ico", "/auth/login-check"}
+AUTH_WHITELIST = {"/ping", "/health", "/healthz", "/docs", "/openapi.json", "/", "/favicon.ico"}
 
 
 # ── App ─────────────────────────────────────────────────────────────────
@@ -74,6 +74,10 @@ async def auth_middleware(request: Request, call_next):
 
     # 白名单路径免鉴权
     if path in AUTH_WHITELIST or path.startswith("/docs") or path.startswith("/openapi"):
+        return await call_next(request)
+
+    # /auth/login-check 自行验证 key（前端登录用，请求时不带 Bearer）
+    if path == "/auth/login-check" and request.method == "POST":
         return await call_next(request)
 
     # 如果没有配置 API_KEY，跳过鉴权（开发模式）
@@ -1534,7 +1538,13 @@ async def login_check(request: Request):
     """Validate API key without exposing session data. Used by frontend login."""
     body = await request.json()
     key = body.get("key", "")
-    if API_KEYS and key not in API_KEYS:
+    # If no API_KEY configured, any non-empty key is accepted (dev mode)
+    if not API_KEYS:
+        if not key:
+            return JSONResponse(status_code=401, content={"error": "invalid_key"})
+        return {"status": "ok", "mode": "dev"}
+    # Production: key must match one in the pool
+    if key not in API_KEYS:
         return JSONResponse(status_code=401, content={"error": "invalid_key"})
     return {"status": "ok"}
 
