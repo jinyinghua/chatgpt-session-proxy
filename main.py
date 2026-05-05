@@ -471,8 +471,71 @@ async def parse_conversation_sse(
     return images
 
 
+
+async def _poll_conversation_for_images(access_token: str, device_id: str, conversation_id: str, parent_msg_id: str = "") -> list[dict]:
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": WEB_USER_AGENT,
+        "OAI-Device-Id": device_id,
+    }
+    
+    poll_interval = 3
+    poll_max_wait = 300
+    deadline = time.time() + poll_max_wait
+
+    seen_ids = set()
+
+    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
+        while time.time() < deadline:
+            await asyncio.sleep(poll_interval)
+            log.info(f"[poll] checking conversation {conversation_id}")
+            resp = await session.get(f"{BASE_URL}/conversation/{conversation_id}", headers=headers)
+            if resp.status_code != 200:
+                err_text = resp.content.decode()[:200]
+                log.warning(f"[poll] GET conversation returned {resp.status_code}: {err_text}")
+                continue
+            
+            try:
+                conv = resp.json()
+            except Exception as e:
+                log.warning(f"[poll] decode error: {e}")
+                continue
+            
+            mapping = conv.get("mapping", {})
+            images = []
+            
+            for node_id, node in mapping.items():
+                msg = node.get("message")
+                if not msg:
+                    continue
+                if parent_msg_id and msg.get("id") == parent_msg_id:
+                    continue
+                
+                author_role = msg.get("author", {}).get("role", "")
+                if author_role in ("user", "system"):
+                    continue
+                
+                found = await _extract_images_from_message(
+                    access_token,
+                    device_id,
+                    msg,
+                    conversation_id,
+                    seen_ids,
+                )
+                if found:
+                    _merge_images(images, found)
+            
+            if images:
+                log.info(f"[poll] found {len(images)} images via polling")
+                return images
+                
+            log.info(f"[poll] still waiting for images...")
+
+    raise Exception("Timed out waiting for async image generation")
+
 # ══════════════════════════════════════════════════════════════════════════
 #  Image generation core
+
 # ══════════════════════════════════════════════════════════════════════════
 
 async def _handle_image_via_conversation(
@@ -515,88 +578,116 @@ async def _handle_image_via_conversation(
     if proof_token:
         headers["openai-sentinel-proof-token"] = proof_token
 
-    # Use /f/conversation only (legacy route for Free accounts)
-    path = "/f/conversation"
-    log.info(f"[conv] POST {BASE_URL}{path}")
-    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
-        resp = await session.post(
-            f"{BASE_URL}{path}",
-            json=body, headers=headers, stream=True, timeout=300,
-        )
-        if resp.status_code != 200:
-            err_body = resp.content
-            log.error(f"[conv] {path} returned {resp.status_code}: {err_body[:512]}")
-            raise Exception(f"conversation returned {resp.status_code}")
+    msg_id = body["messages"][0]["id"]
+    for path in ("/f/conversation", "/conversation"):
+        route_label = path.split("/")[-1]
+        log.info(f"[conv] POST {BASE_URL}{path}")
+        try:
+            async with curl_requests.AsyncSession(impersonate="chrome110") as session:
+                resp = await session.post(
+                    f"{BASE_URL}{path}",
+                    json=body, headers=headers, stream=True, timeout=300,
+                )
+                if resp.status_code != 200:
+                    err_body = resp.content
+                    log.warning(f"[conv] {route_label} returned {resp.status_code}: {err_body[:512]}")
+                    if resp.status_code in (403, 404) and path == "/f/conversation":
+                        continue
+                    raise Exception(f"{route_label} returned {resp.status_code}")
 
-        images = []
-        seen_ids = set()
-        chunks = []
-        chunk_count = 0
-        conversation_id = ""
-        observed_signatures = []
+                images = []
+                seen_ids = set()
+                chunks = []
+                chunk_count = 0
+                conversation_id = ""
+                observed_signatures = []
+                async_mode = False
 
-        async for line in resp.aiter_lines():
-            decoded = line.decode("utf-8") if isinstance(line, bytes) else line
-            if decoded:
-                chunks.append(decoded)
-            if not decoded.startswith("data: "):
-                continue
+                async for line in resp.aiter_lines():
+                    decoded = line.decode("utf-8") if isinstance(line, bytes) else line
+                    if decoded:
+                        chunks.append(decoded)
+                    if not decoded.startswith("data: "):
+                        continue
 
-            data_str = decoded[6:].strip()
-            if data_str == "[DONE]":
-                break
-            if not data_str.startswith("{"):
-                continue
+                    data_str = decoded[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    if not data_str.startswith("{"):
+                        continue
 
-            chunk_count += 1
-            try:
-                event = json.loads(data_str)
-            except Exception:
-                continue
+                    chunk_count += 1
+                    try:
+                        event = json.loads(data_str)
+                    except Exception:
+                        continue
 
-            cid = event.get("conversation_id", "")
-            if cid:
-                conversation_id = cid
+                    cid = event.get("conversation_id", "")
+                    if cid:
+                        conversation_id = cid
 
-            msg = event.get("message")
-            if not msg:
-                continue
+                    async_status = event.get("async_status")
+                    if async_status and isinstance(async_status, int) and async_status > 0:
+                        async_mode = True
+                        log.info(f"[conv] async_status={async_status}, will poll after stream")
 
-            signature = _message_signature(msg)
-            if signature not in observed_signatures and len(observed_signatures) < 12:
-                observed_signatures.append(signature)
+                    msg = event.get("message")
+                    if not msg:
+                        continue
 
-            if chunk_count <= 3 or chunk_count % 10 == 0:
-                log.info(f"[conv] chunk={chunk_count} sig={signature} images={len(images)}")
+                    signature = _message_signature(msg)
+                    if signature not in observed_signatures and len(observed_signatures) < 12:
+                        observed_signatures.append(signature)
 
-            if msg.get("author", {}).get("role", "") in ("user", "system"):
-                continue
+                    if chunk_count <= 3 or chunk_count % 10 == 0:
+                        log.info(f"[conv] chunk={chunk_count} sig={signature} images={len(images)}")
 
-            found = await _extract_images_from_message(
-                access_token,
-                device_id,
-                msg,
-                cid or conversation_id,
-                seen_ids,
-            )
-            if found:
-                _merge_images(images, found)
-                log.info(f"[conv] extracted {len(found)} image(s) from live stream, total={len(images)}")
+                    if msg.get("author", {}).get("role", "") in ("user", "system"):
+                        continue
 
-        if len(images) < n:
-            reparsed = await parse_conversation_sse(access_token, device_id, chunks)
-            if reparsed:
-                before = len(images)
-                _merge_images(images, reparsed)
-                if len(images) > before:
-                    log.info(f"[conv] recovered {len(images) - before} image(s) via batch reparse")
+                    found = await _extract_images_from_message(
+                        access_token,
+                        device_id,
+                        msg,
+                        cid or conversation_id,
+                        seen_ids,
+                    )
+                    if found:
+                        _merge_images(images, found)
+                        log.info(f"[conv] extracted {len(found)} image(s) from live stream, total={len(images)}")
 
-        log.info(f"[conv] total: {chunk_count} chunks, {len(images)} images")
-        if images:
-            return _build_images_response(images[:n], response_format)
+                if len(images) < n:
+                    reparsed = await parse_conversation_sse(access_token, device_id, chunks)
+                    if reparsed:
+                        before = len(images)
+                        _merge_images(images, reparsed)
+                        if len(images) > before:
+                            log.info(f"[conv] recovered {len(images) - before} image(s) via batch reparse")
 
-        log.warning(f"[conv] no images found; observed signatures={observed_signatures}")
-        raise Exception("No images in response")
+                log.info(f"[conv] total: {chunk_count} chunks, {len(images)} images")
+                
+                if images:
+                    return _build_images_response(images[:n], response_format)
+                
+                if async_mode and conversation_id:
+                    log.info(f"[conv] async polling for conversation {conversation_id}")
+                    images = await _poll_conversation_for_images(access_token, device_id, conversation_id, parent_msg_id=msg_id)
+                    if images:
+                        return _build_images_response(images[:n], response_format)
+
+                log.warning(f"[conv] {route_label} no images found; observed signatures={observed_signatures}")
+                
+                # If path was /f/conversation but no images and no errors, maybe /conversation will work?
+                # Usually no images means prompt refusal, but let's just raise to match previous behavior
+                if path == "/conversation":
+                    raise Exception("No images in response")
+                raise Exception("No images in response")
+
+        except Exception as e:
+            if path == "/conversation":
+                raise
+            log.warning(f"[conv] {route_label} failed: {e}, trying /conversation")
+            continue
 
 
 def _build_images_response(images: list[dict], response_format: str) -> dict:
