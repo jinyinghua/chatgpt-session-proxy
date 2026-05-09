@@ -1502,7 +1502,7 @@ a{color:#00d4ff}
         return;
       }
 
-      let h = '<table class="tbl"><tr><th>Status</th><th>SID</th><th>Account</th><th>Expires</th><th>Error</th><th>Actions</th></tr>';
+      let h = '<table class="tbl"><tr><th>Status</th><th>SID</th><th>Account / Email</th><th>Expires</th><th>Error</th><th>Actions</th></tr>';
       for (const s of d.sessions) {
         const dis = s.disabled, exp = s.is_expired, hlt = s.is_healthy && !dis;
         let dot, txt, bCls;
@@ -1520,7 +1520,7 @@ a{color:#00d4ff}
         h += `<tr>
           <td><span class="dot ${dot}"></span><span class="badge ${bCls}">${txt}</span></td>
           <td><code>${s.sid}</code></td>
-          <td>${s.account_id ? s.account_id.substring(0, 8) + '...' : '-'}</td>
+          <td><div>${s.account_id ? s.account_id.substring(0, 8) + "..." : "-"}</div><div style="font-size:0.75rem;color:#888">${s.email || ""}</div></td>
           <td>${ex}</td>
           <td title="${s.last_error || ''}">${er}</td>
           <td class="actions">${tb}<button class="sm ghost" onclick="rmS('${s.sid}')">Del</button></td>

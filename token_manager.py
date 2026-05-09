@@ -31,6 +31,7 @@ class SessionSlot:
     access_token: str = ""
     session_token: str = ""
     account_id: str = ""
+    email: str = ""
     expires_at: float = 0
     raw_session: dict = field(default_factory=dict)
     error_count: int = 0
@@ -49,6 +50,7 @@ class SessionSlot:
         return {
             "sid": self.sid,
             "account_id": self.account_id,
+            "email": self.email,
             "expires_at": self.expires_at,
             "error_count": self.error_count,
             "last_error": self.last_error,
@@ -75,6 +77,7 @@ def _apply_session_data(data: dict) -> dict:
     session_token = data.get("sessionToken", "")
     account = data.get("account", {})
     account_id = account.get("id", "")
+    email = data.get("user", {}).get("email", "")
     expires_str = data.get("expires", "")
     expires_at = 0
     if expires_str:
@@ -90,6 +93,7 @@ def _apply_session_data(data: dict) -> dict:
         "access_token": access_token,
         "session_token": session_token,
         "account_id": account_id,
+        "email": email,
         "expires_at": expires_at,
     }
 
@@ -148,6 +152,7 @@ class TokenManager:
             access_token=fields["access_token"],
             session_token=fields["session_token"],
             account_id=fields["account_id"],
+            email=fields.get("email", ""),
             expires_at=fields["expires_at"],
             raw_session=data,
         )
@@ -175,6 +180,7 @@ class TokenManager:
         if existing:
             existing.access_token = fields["access_token"]
             existing.session_token = fields["session_token"]
+            existing.email = fields.get("email", "") or existing.email
             existing.expires_at = 0  # force refresh
             existing.raw_session = data
             existing.error_count = 0
@@ -297,6 +303,7 @@ class TokenManager:
                 fields = _apply_session_data(data)
                 slot.access_token = fields["access_token"]
                 slot.session_token = fields["session_token"] or slot.session_token
+                slot.email = fields.get("email", "") or slot.email
                 if fields["account_id"]:
                     slot.account_id = fields["account_id"]
                     slot.sid = fields["account_id"][:8]
