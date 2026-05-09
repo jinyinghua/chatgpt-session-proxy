@@ -707,8 +707,10 @@ async def _handle_image_via_conversation(
                         conversation_id = cid
 
                     # Detect top-level error (e.g. rate limits, ban, policy)
-                    if event.get("error"):
-                        err_val = event.get("error")
+                    err_val = event.get("error")
+                    if not err_val and "v" in event and isinstance(event["v"], dict):
+                        err_val = event["v"].get("error")
+                    if err_val:
                         err_msg = err_val if isinstance(err_val, str) else json.dumps(err_val)
                         log.warning(f"[conv] Upstream error in stream: {err_msg}")
                         raise Exception(f"Upstream error: {err_msg}")
@@ -724,6 +726,8 @@ async def _handle_image_via_conversation(
                         raise Exception("Content policy violation: moderation blocked")
 
                     msg = event.get("message")
+                    if not msg and "v" in event and isinstance(event["v"], dict):
+                        msg = event["v"].get("message")
                     if not msg:
                         continue
 
@@ -805,7 +809,9 @@ async def _handle_image_via_conversation(
                     if evt.get("moderation_state") == "blocked":
                         error_events.append("moderation_blocked")
                     
-                    m = evt.get("message", {})
+                    m = evt.get("message")
+                    if not m and "v" in evt and isinstance(evt["v"], dict):
+                        m = evt["v"].get("message")
                     if not m:
                         continue
                     
