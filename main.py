@@ -21,7 +21,7 @@ import time
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, Response
 from pydantic import BaseModel
 from curl_cffi import requests as curl_requests
 from dotenv import load_dotenv
@@ -1523,10 +1523,11 @@ a{color:#00d4ff}
           <td><div>${s.account_id ? s.account_id.substring(0, 8) + "..." : "-"}</div><div style="font-size:0.75rem;color:#888">${s.email || ""}</div></td>
           <td>${ex}</td>
           <td title="${s.last_error || ''}">${er}</td>
-          <td class="actions">${tb}<button class="sm ghost" onclick="rmS('${s.sid}')">Del</button></td>
+          <td class="actions">${tb}<button class="sm ghost" onclick="dlS('${s.sid}')">DL</button><button class="sm ghost" onclick="rmS('${s.sid}')">Del</button></td>
         </tr>`;
       }
       h += '</table>';
+      h += '<div style="margin-top:12px;text-align:right"><button class="sm ghost" onclick="dlAll()">📦 Download All (ZIP)</button></div>';
       el.innerHTML = h;
     } catch (e) {
       el.innerHTML = `<div class="msg err">Failed to load status: ${e.message}</div>`;
@@ -1555,6 +1556,15 @@ a{color:#00d4ff}
     if (!confirm(`Delete session ${sid}?`)) return;
     await fetch(`/auth/session/${sid}/remove`, { method: 'POST', headers: hdrs() });
     loadStatus();
+  };
+
+  
+  window.dlS = function(sid) {
+    window.open(`/auth/session/${sid}/download`, '_blank');
+  };
+
+  window.dlAll = function() {
+    window.open('/auth/sessions/download', '_blank');
   };
 
   window.togS = async function(sid, dis) {
@@ -1644,6 +1654,48 @@ async def toggle_session(sid: str, request: Request):
         state = "disabled" if disabled else "enabled"
         return {"status": "ok", "message": f"Session {sid} {state}"}
     raise HTTPException(status_code=404, detail=f"Session {sid} not found")
+
+
+@app.get("/auth/session/{sid}/download")
+async def download_session(sid: str):
+    """下载单个 session 的 JSON"""
+    import io
+    for s in token_manager.sessions:
+        if s.sid == sid:
+            if not s.raw_session:
+                raise HTTPException(status_code=404, detail=f"Session {sid} has no raw data")
+            data = json.dumps(s.raw_session, indent=2, ensure_ascii=False)
+            return Response(
+                content=data,
+                media_type="application/json",
+                headers={"Content-Disposition": f'attachment; filename="session_{sid}.json"'}
+            )
+    raise HTTPException(status_code=404, detail=f"Session {sid} not found")
+
+
+@app.get("/auth/sessions/download")
+async def download_all_sessions():
+    """打包所有 session 为 ZIP 下载"""
+    import io, zipfile
+    buf = io.BytesIO()
+    count = 0
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for s in token_manager.sessions:
+            if s.raw_session:
+                fname = f"session_{s.sid}.json"
+                zf.writestr(fname, json.dumps(s.raw_session, indent=2, ensure_ascii=False))
+                count += 1
+        # Also add a combined file
+        all_data = [s.raw_session for s in token_manager.sessions if s.raw_session]
+        zf.writestr("all_sessions.json", json.dumps(all_data, indent=2, ensure_ascii=False))
+    buf.seek(0)
+    if count == 0:
+        raise HTTPException(status_code=404, detail="No sessions with raw data to export")
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="chatgpt_sessions.zip"'}
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
