@@ -212,6 +212,116 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Conversation node-tree builder (for image generation via Free account)
+
+def _parse_data_uri(uri: str) -> tuple[bytes, str]:
+    if not uri.startswith("data:"):
+        return None, ""
+    try:
+        header, data = uri.split(",", 1)
+        mime = header.split(":", 1)[1].split(";", 1)[0]
+        return base64.b64decode(data), mime
+    except Exception:
+        return None, ""
+
+
+async def _upload_file(access_token: str, device_id: str, data: bytes, mime_type: str) -> str:
+    """Upload file to ChatGPT and return file_id."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "User-Agent": WEB_USER_AGENT,
+        "OAI-Device-Id": device_id,
+    }
+    
+    filename = f"input_image_{int(time.time())}.png"
+    
+    async with curl_requests.AsyncSession(impersonate="chrome110") as session:
+        # Step 1: Pre-upload
+        pre_payload = {
+            "file_name": filename,
+            "file_size": len(data),
+            "use_case": "multimodal",
+            "mime_type": mime_type or "image/png"
+        }
+        resp = await session.post(f"{BASE_URL}/files", json=pre_payload, headers=headers)
+        if resp.status_code != 200:
+            log.error(f"[upload] pre-upload failed: {resp.status_code} {resp.text}")
+            return ""
+        
+        pre_data = resp.json()
+        upload_url = pre_data.get("upload_url")
+        file_id = pre_data.get("file_id")
+        
+        if not upload_url or not file_id:
+            return ""
+            
+        # Step 2: Upload to blob
+        # Note: impersonate might interfere with direct blob upload, using plain headers
+        blob_headers = {"x-ms-blob-type": "BlockBlob", "Content-Type": mime_type or "image/png"}
+        # Use a new session without impersonation for the PUT request to avoid TLS issues with Azure
+        async with curl_requests.AsyncSession() as blob_session:
+            put_resp = await blob_session.put(upload_url, data=data, headers=blob_headers)
+            if put_resp.status_code not in (200, 201):
+                log.error(f"[upload] blob upload failed: {put_resp.status_code}")
+                return ""
+        
+        # Step 3: Confirm
+        conf_resp = await session.post(f"{BASE_URL}/files/{file_id}/uploaded", json={}, headers=headers)
+        if conf_resp.status_code != 200:
+            log.error(f"[upload] confirm failed: {conf_resp.status_code}")
+            return ""
+            
+        log.info(f"[upload] success: {file_id}")
+        return file_id
+
+
+def build_multimodal_body(prompt: str, model: str, file_ids: list, encodings: list = None) -> dict:
+    """Build multimodal body for image editing/input."""
+    if model in IMAGE_MODELS:
+        model = "auto"
+    msg_id = str(uuid.uuid4())
+    
+    parts = [prompt]
+    attachments = []
+    
+    for i, fid in enumerate(file_ids):
+        parts.append({
+            "content_type": "image_asset_pointer",
+            "asset_pointer": f"file-service://{fid}",
+            "size_bytes": 0, # optional
+        })
+        attachments.append({
+            "id": fid,
+            "name": f"image_{i}.png",
+            "mimeType": "image/png",
+        })
+
+    return {
+        "action": "next",
+        "messages": [
+            {
+                "id": msg_id,
+                "author": {"role": "user"},
+                "content": {"content_type": "multimodal_text", "parts": parts},
+                "metadata": {
+                    "attachments": attachments,
+                    "system_hints": ["picture_v2"],
+                },
+            }
+        ],
+        "parent_message_id": "client-created-root",
+        "model": model,
+        "timezone_offset_min": 420,
+        "timezone": "America/Los_Angeles",
+        "conversation_mode": {"kind": "primary_assistant"},
+        "enable_message_followups": True,
+        "system_hints": ["picture_v2"],
+        "supports_buffering": True,
+        "supported_encodings": encodings or [],
+        "paragen_cot_summary_display_override": "allow",
+        "force_parallel_switch": "auto",
+    }
+
 # ══════════════════════════════════════════════════════════════════════════
 
 def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL, encodings: list = None) -> dict:
@@ -622,6 +732,7 @@ async def _poll_conversation_for_images(access_token: str, device_id: str, conve
 async def _handle_image_via_conversation(
     prompt: str, model: str, n: int,
     size: str, quality: str, background: str, response_format: str,
+    input_images: list = None,
 ) -> dict:
     full_prompt = prompt
     if size and size not in ("auto", "1024x1024"):
@@ -949,20 +1060,28 @@ class ChatCompletionRequest(BaseModel):
     background: str = "auto"
 
 
-def _extract_prompt_from_messages(messages: list[ChatMessage]) -> str:
+def _extract_prompt_and_images(messages: list[ChatMessage]) -> tuple[str, list]:
     parts = []
+    images = []
     for msg in messages:
         if msg.role in ("system", "assistant", "tool"):
             continue
-        if isinstance(msg.content, str):
-            parts.append(msg.content)
-        elif isinstance(msg.content, list):
-            for item in msg.content:
-                if isinstance(item, dict) and item.get("type") == "text":
+        content = msg.content
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    parts.append(str(item))
+                    continue
+                t = item.get("type")
+                if t == "text":
                     parts.append(item.get("text", ""))
-                elif isinstance(item, str):
-                    parts.append(item)
-    return "\n\n".join(parts)
+                elif t == "image_url":
+                    url = item.get("image_url", {}).get("url", "")
+                    if url:
+                        images.append({"url": url})
+    return "\n\n".join(parts), images
 
 
 @app.post("/v1/chat/completions")
@@ -971,7 +1090,7 @@ async def chat_completions(req: ChatCompletionRequest):
 
     # ── Image generation mode ────────────────────────────────────────────
     if model in IMAGE_MODELS:
-        prompt = _extract_prompt_from_messages(req.messages)
+        prompt, input_images = _extract_prompt_and_images(req.messages)
         if not prompt.strip():
             raise HTTPException(status_code=400, detail="prompt is required")
 
@@ -981,6 +1100,7 @@ async def chat_completions(req: ChatCompletionRequest):
                 prompt=prompt, model=model, n=req.n,
                 size=req.size, quality=req.quality,
                 background=req.background, response_format="url",
+                input_images=input_images,
             )
             markdown_parts = []
             for img in img_resp.get("data", []):
