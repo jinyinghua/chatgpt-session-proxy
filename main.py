@@ -194,6 +194,8 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
             raise Exception(f"chat-requirements failed: {resp.status_code} {resp.text}")
 
         data = resp.json()
+        if "/f/conversation" in str(inspect.stack()): # simplified check
+             log.info(f"[sentinel] requirements: {json.dumps(data)}")
         chat_token = data.get("token", "")
         pow_info = data.get("proofofwork", {})
         proof_token = ""
@@ -633,6 +635,9 @@ async def _handle_image_via_conversation(
     device_id = token_manager.device_id
     chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
 
+    # Force gpt-4o for images if auto, as it has better DALL-E 3 support
+    if model == "auto":
+        model = "gpt-4o"
     body = build_conversation_body(full_prompt, model=model)
 
     headers = {
@@ -822,10 +827,14 @@ async def _handle_image_via_conversation(
                     # Extract assistant text
                     if (m.get("author") or {}).get("role") == "assistant":
                         c = m.get("content") or {}
-                        if c.get("content_type") == "text":
-                            parts = c.get("parts", [])
-                            if parts and isinstance(parts[0], str):
-                                assistant_text = parts[0]
+                        parts = c.get("parts", [])
+                        for part in parts:
+                            if isinstance(part, str):
+                                assistant_text += part
+                            elif isinstance(part, dict) and "text" in part:
+                                assistant_text += str(part["text"])
+                            elif isinstance(part, dict):
+                                assistant_text += f"[{part.get('content_type', 'unknown')}]"
                 
                 # Report what we found
                 if all_msg_signatures:
