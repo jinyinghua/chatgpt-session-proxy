@@ -214,7 +214,7 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
 #  Conversation node-tree builder (for image generation via Free account)
 # ══════════════════════════════════════════════════════════════════════════
 
-def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL) -> dict:
+def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL, encodings: list = None) -> dict:
     # Map image model names to "auto" for upstream (ChatGpt-Image-Studio convention)
     if model in IMAGE_MODELS:
         model = "auto"
@@ -242,7 +242,7 @@ def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL) -> dict:
         "client_prepare_state": "none",
         "system_hints": ["picture_v2"],
         "supports_buffering": True,
-        "supported_encodings": ["v1"],
+        "supported_encodings": encodings or [],
         "client_contextual_info": {
             "is_dark_mode": True,
             "time_since_loaded": 1000,
@@ -637,7 +637,11 @@ async def _handle_image_via_conversation(
 
     # Force gpt-4o for images if auto, as it has better DALL-E 3 support
     if model == "auto":
-        model = "gpt-4o"
+        # Use gpt-5.4-mini as it is the current default for paid in image-studio
+        # but for free accounts "auto" is usually better. 
+        # Let is stay "auto" for now to match image-studio free route.
+        pass
+    # Initial body with default encodings
     body = build_conversation_body(full_prompt, model=model)
 
     headers = {
@@ -665,6 +669,15 @@ async def _handle_image_via_conversation(
     msg_id = body["messages"][0]["id"]
     for path in ("/f/conversation", "/conversation"):
         route_label = path.split("/")[-1]
+        
+        # Match ChatGpt-Image-Studio behavior for /f/conversation
+        if path == "/f/conversation":
+            body["client_prepare_state"] = "none"
+            body["supported_encodings"] = ["v1"]
+        else:
+            body.pop("client_prepare_state", None)
+            body["supported_encodings"] = []
+
         log.info(f"[conv] POST {BASE_URL}{path}")
         try:
             async with curl_requests.AsyncSession(impersonate="chrome110") as session:
