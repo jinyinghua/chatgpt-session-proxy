@@ -891,13 +891,13 @@ async def _handle_image_via_conversation(
                 log.info(f"[conv] total: {chunk_count} chunks, {len(images)} images")
                 
                 if images:
-                    return _build_images_response(images[:n], response_format)
+                    return _build_images_response(images[:n], response_format, text=assistant_text)
                 
                 if async_mode and conversation_id:
                     log.info(f"[conv] async polling for conversation {conversation_id}")
                     images = await _poll_conversation_for_images(access_token, device_id, conversation_id, parent_msg_id=msg_id)
                     if images:
-                        return _build_images_response(images[:n], response_format)
+                        return _build_images_response(images[:n], response_format, text=assistant_text)
 
                 log.warning(f"[conv] {route_label} no images found; observed signatures={observed_signatures}")
                 
@@ -991,7 +991,71 @@ async def _handle_image_via_conversation(
             continue
 
 
-def _build_images_response(images: list[dict], response_format: str) -> dict:
+
+async def _stream_image_via_conversation(
+    prompt: str, model: str, n: int,
+    size: str, quality: str, background: str,
+    input_images: list = None,
+) -> StreamingResponse:
+    """Call image generation and stream text + images as OpenAI format."""
+    
+    async def generate():
+        cmpl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+        
+        # We'll just call the non-streaming handler for now but wrap its result in a stream
+        # To do true streaming of images, we'd need to refactor _handle_image_via_conversation
+        # but let's at least return the combined result as a stream to satisfy the client.
+        try:
+            img_resp = await _handle_image_via_conversation(
+                prompt=prompt, model=model, n=n,
+                size=size, quality=quality,
+                background=background, response_format="url",
+                input_images=input_images,
+            )
+            
+            content = img_resp.get("text", "").strip()
+            markdown_parts = []
+            for img in img_resp.get("data", []):
+                url = img.get("url", "")
+                if url:
+                    markdown_parts.append(f"![image]({url})")
+            
+            img_markdown = "\n\n".join(markdown_parts)
+            if img_markdown:
+                content = (content + "\n\n" + img_markdown).strip()
+            
+            if content:
+                # Yield the full content as one chunk (or we could split it)
+                chunk = {
+                    "id": cmpl_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": model,
+                    "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+                }
+                yield "data: " + json.dumps(chunk) + "\n\n"
+            
+            # Send stop
+            stop_chunk = {
+                "id": cmpl_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            yield "data: " + json.dumps(stop_chunk) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            log.error(f"[stream-img] error: {e}")
+            yield "data: " + json.dumps({"error": {"message": str(e)}}) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+def _build_images_response(images: list[dict], response_format: str, text: str = "") -> dict:
     data = []
     for img in images:
         item = {"revised_prompt": img.get("revised_prompt", "")}
@@ -1009,7 +1073,7 @@ def _build_images_response(images: list[dict], response_format: str) -> dict:
         else:
             item["url"] = url
         data.append(item)
-    return {"created": int(time.time()), "data": data}
+    return {"created": int(time.time()), "data": data, "text": text}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1093,7 +1157,15 @@ async def chat_completions(req: ChatCompletionRequest):
         if not prompt.strip():
             raise HTTPException(status_code=400, detail="prompt is required")
 
-        log.info(f"[chat] image mode, model={model}")
+        log.info(f"[chat] image mode, model={model}, stream={req.stream}")
+        
+        if req.stream:
+            return await _stream_image_via_conversation(
+                prompt=prompt, model=model, n=req.n,
+                size=req.size, quality=req.quality,
+                background=req.background,
+                input_images=input_images,
+            )
         try:
             img_resp = await _handle_image_via_conversation(
                 prompt=prompt, model=model, n=req.n,
@@ -1106,7 +1178,16 @@ async def chat_completions(req: ChatCompletionRequest):
                 url = img.get("url", "")
                 if url:
                     markdown_parts.append(f"![image]({url})")
-            content = "\n\n".join(markdown_parts) if markdown_parts else "Image generation failed."
+            
+            assistant_text = img_resp.get("text", "").strip()
+            img_markdown = "\n\n".join(markdown_parts)
+            
+            content = assistant_text
+            if img_markdown:
+                content = (content + "\n\n" + img_markdown).strip()
+            
+            if not content:
+                content = "Image generation failed."
 
             return {
                 "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
