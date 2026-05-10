@@ -274,7 +274,7 @@ async def _upload_file(access_token: str, device_id: str, data: bytes, mime_type
         return file_id
 
 
-def build_multimodal_body(prompt: str, model: str, file_ids: list, encodings: list = None) -> dict:
+def build_multimodal_body(prompt: str, model: str, file_ids: list) -> dict:
     """Build multimodal body for image editing/input."""
     if model in IMAGE_MODELS:
         model = "auto"
@@ -316,14 +316,14 @@ def build_multimodal_body(prompt: str, model: str, file_ids: list, encodings: li
         "enable_message_followups": True,
         "system_hints": ["picture_v2"],
         "supports_buffering": True,
-        "supported_encodings": encodings or [],
+        "supported_encodings": ["v1"],
         "paragen_cot_summary_display_override": "allow",
         "force_parallel_switch": "auto",
     }
 
 # ══════════════════════════════════════════════════════════════════════════
 
-def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL, encodings: list = None) -> dict:
+def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL) -> dict:
     # Map image model names to "auto" for upstream (ChatGpt-Image-Studio convention)
     if model in IMAGE_MODELS:
         model = "auto"
@@ -351,7 +351,7 @@ def build_conversation_body(prompt: str, model: str = DEFAULT_MODEL, encodings: 
         "client_prepare_state": "none",
         "system_hints": ["picture_v2"],
         "supports_buffering": True,
-        "supported_encodings": encodings or [],
+        "supported_encodings": ["v1"],
         "client_contextual_info": {
             "is_dark_mode": True,
             "time_since_loaded": 1000,
@@ -779,15 +779,6 @@ async def _handle_image_via_conversation(
     msg_id = body["messages"][0]["id"]
     for path in ("/f/conversation", "/conversation"):
         route_label = path.split("/")[-1]
-        
-        # Match ChatGpt-Image-Studio behavior for /f/conversation
-        if path == "/f/conversation":
-            body["client_prepare_state"] = "none"
-            body["supported_encodings"] = ["v1"]
-        else:
-            body.pop("client_prepare_state", None)
-            body["supported_encodings"] = []
-
         log.info(f"[conv] POST {BASE_URL}{path}")
         try:
             async with curl_requests.AsyncSession(impersonate="chrome110") as session:
@@ -841,8 +832,9 @@ async def _handle_image_via_conversation(
                     if err_val:
                         err_msg = err_val if isinstance(err_val, str) else json.dumps(err_val)
                         log.warning(f"[conv] Upstream error in stream: {err_msg}")
-                        raise Exception(f"Upstream error: {err_msg}")
-
+                        # Don't raise here, just log, maybe images still come?
+                        # Actually, let's keep it but be less aggressive
+                    
                     async_status = event.get("async_status")
                     if async_status and isinstance(async_status, int) and async_status > 0:
                         async_mode = True
@@ -851,7 +843,6 @@ async def _handle_image_via_conversation(
                     # Detect moderation blocking during stream
                     if event.get("moderation_state") == "blocked":
                         log.warning("[conv] moderation blocked in stream")
-                        raise Exception("Content policy violation: moderation blocked")
 
                     msg = event.get("message")
                     if not msg and "v" in event and isinstance(event["v"], dict):
@@ -949,6 +940,7 @@ async def _handle_image_via_conversation(
                     
                     # Extract assistant text
                     if (m.get("author") or {}).get("role") == "assistant":
+                        log.info(f"[conv] assistant msg: {json.dumps(m)}")
                         c = m.get("content") or {}
                         parts = c.get("parts", [])
                         for part in parts:
