@@ -731,7 +731,6 @@ async def _poll_conversation_for_images(access_token: str, device_id: str, conve
 async def _handle_image_via_conversation(
     prompt: str, model: str, n: int,
     size: str, quality: str, background: str, response_format: str,
-    input_images: list = None,
 ) -> dict:
     full_prompt = prompt
     if size and size not in ("auto", "1024x1024"):
@@ -745,13 +744,6 @@ async def _handle_image_via_conversation(
     device_id = token_manager.device_id
     chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
 
-    # Force gpt-4o for images if auto, as it has better DALL-E 3 support
-    if model == "auto":
-        # Use gpt-5.4-mini as it is the current default for paid in image-studio
-        # but for free accounts "auto" is usually better. 
-        # Let is stay "auto" for now to match image-studio free route.
-        pass
-    # Initial body with default encodings
     body = build_conversation_body(full_prompt, model=model)
 
     headers = {
@@ -826,15 +818,12 @@ async def _handle_image_via_conversation(
                         conversation_id = cid
 
                     # Detect top-level error (e.g. rate limits, ban, policy)
-                    err_val = event.get("error")
-                    if not err_val and "v" in event and isinstance(event["v"], dict):
-                        err_val = event["v"].get("error")
-                    if err_val:
+                    if event.get("error"):
+                        err_val = event.get("error")
                         err_msg = err_val if isinstance(err_val, str) else json.dumps(err_val)
                         log.warning(f"[conv] Upstream error in stream: {err_msg}")
-                        # Don't raise here, just log, maybe images still come?
-                        # Actually, let's keep it but be less aggressive
-                    
+                        raise Exception(f"Upstream error: {err_msg}")
+
                     async_status = event.get("async_status")
                     if async_status and isinstance(async_status, int) and async_status > 0:
                         async_mode = True
@@ -843,10 +832,9 @@ async def _handle_image_via_conversation(
                     # Detect moderation blocking during stream
                     if event.get("moderation_state") == "blocked":
                         log.warning("[conv] moderation blocked in stream")
+                        raise Exception("Content policy violation: moderation blocked")
 
                     msg = event.get("message")
-                    if not msg and "v" in event and isinstance(event["v"], dict):
-                        msg = event["v"].get("message")
                     if not msg:
                         continue
 
@@ -882,13 +870,13 @@ async def _handle_image_via_conversation(
                 log.info(f"[conv] total: {chunk_count} chunks, {len(images)} images")
                 
                 if images:
-                    return _build_images_response(images[:n], response_format, text=assistant_text)
+                    return _build_images_response(images[:n], response_format)
                 
                 if async_mode and conversation_id:
                     log.info(f"[conv] async polling for conversation {conversation_id}")
                     images = await _poll_conversation_for_images(access_token, device_id, conversation_id, parent_msg_id=msg_id)
                     if images:
-                        return _build_images_response(images[:n], response_format, text=assistant_text)
+                        return _build_images_response(images[:n], response_format)
 
                 log.warning(f"[conv] {route_label} no images found; observed signatures={observed_signatures}")
                 
@@ -928,9 +916,7 @@ async def _handle_image_via_conversation(
                     if evt.get("moderation_state") == "blocked":
                         error_events.append("moderation_blocked")
                     
-                    m = evt.get("message")
-                    if not m and "v" in evt and isinstance(evt["v"], dict):
-                        m = evt["v"].get("message")
+                    m = evt.get("message", {})
                     if not m:
                         continue
                     
@@ -940,16 +926,11 @@ async def _handle_image_via_conversation(
                     
                     # Extract assistant text
                     if (m.get("author") or {}).get("role") == "assistant":
-                        log.info(f"[conv] assistant msg: {json.dumps(m)}")
                         c = m.get("content") or {}
-                        parts = c.get("parts", [])
-                        for part in parts:
-                            if isinstance(part, str):
-                                assistant_text += part
-                            elif isinstance(part, dict) and "text" in part:
-                                assistant_text += str(part["text"])
-                            elif isinstance(part, dict):
-                                assistant_text += f"[{part.get('content_type', 'unknown')}]"
+                        if c.get("content_type") == "text":
+                            parts = c.get("parts", [])
+                            if parts and isinstance(parts[0], str):
+                                assistant_text = parts[0]
                 
                 # Report what we found
                 if all_msg_signatures:
@@ -1003,7 +984,6 @@ async def _stream_image_via_conversation(
                 prompt=prompt, model=model, n=n,
                 size=size, quality=quality,
                 background=background, response_format="url",
-                input_images=input_images,
             )
             
             content = img_resp.get("text", "").strip()
@@ -1156,14 +1136,12 @@ async def chat_completions(req: ChatCompletionRequest):
                 prompt=prompt, model=model, n=req.n,
                 size=req.size, quality=req.quality,
                 background=req.background,
-                input_images=input_images,
             )
         try:
             img_resp = await _handle_image_via_conversation(
                 prompt=prompt, model=model, n=req.n,
                 size=req.size, quality=req.quality,
                 background=req.background, response_format="url",
-                input_images=input_images,
             )
             markdown_parts = []
             for img in img_resp.get("data", []):
