@@ -787,6 +787,7 @@ async def _poll_conversation_for_images(access_token: str, device_id: str, conve
 async def _handle_image_via_conversation(
     prompt: str, model: str, n: int,
     size: str, quality: str, background: str, response_format: str,
+    input_images: list = None,
 ) -> dict:
     full_prompt = prompt
     if size and size not in ("auto", "1024x1024"):
@@ -800,7 +801,28 @@ async def _handle_image_via_conversation(
     device_id = token_manager.device_id
     chat_token, proof_token = await get_sentinel_tokens(access_token, device_id)
 
-    body = build_conversation_body(full_prompt, model=model)
+    # Upload input images and build multimodal body if present
+    body = None
+    if input_images:
+        file_ids = []
+        for img in input_images:
+            url = img.get("url", "")
+            data, mime = (None, "")
+            if url.startswith("data:"):
+                data, mime = _parse_data_uri(url)
+            if data:
+                fid = await _upload_file(access_token, device_id, data, mime)
+                if fid:
+                    file_ids.append(fid)
+                    log.info(f"[conv] uploaded input image: {fid}")
+                else:
+                    log.warning("[conv] failed to upload input image")
+        if file_ids:
+            body = build_multimodal_body(full_prompt, model=model, file_ids=file_ids)
+            log.info(f"[conv] using multimodal body with {len(file_ids)} image(s)")
+
+    if body is None:
+        body = build_conversation_body(full_prompt, model=model)
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -1045,6 +1067,7 @@ async def _stream_image_via_conversation(
                 prompt=prompt, model=model, n=n,
                 size=size, quality=quality,
                 background=background, response_format="url",
+                input_images=input_images,
             )
             
             content = img_resp.get("text", "").strip()
@@ -1197,12 +1220,14 @@ async def chat_completions(req: ChatCompletionRequest):
                 prompt=prompt, model=model, n=req.n,
                 size=req.size, quality=req.quality,
                 background=req.background,
+                input_images=input_images if input_images else None,
             )
         try:
             img_resp = await _handle_image_via_conversation(
                 prompt=prompt, model=model, n=req.n,
                 size=req.size, quality=req.quality,
                 background=req.background, response_format="url",
+                input_images=input_images if input_images else None,
             )
             markdown_parts = []
             for img in img_resp.get("data", []):
