@@ -414,6 +414,9 @@ def _extract_file_id(asset_pointer: str) -> str:
     for prefix in ("file-service://", "sediment://"):
         if asset_pointer.startswith(prefix):
             return asset_pointer[len(prefix):].split("?")[0]
+    # Also handle raw file IDs (e.g. "file_00000...")
+    if asset_pointer.startswith("file_"):
+        return asset_pointer.split("?")[0]
     return ""
 
 def _is_sediment(asset_pointer: str) -> bool:
@@ -461,9 +464,30 @@ async def _resolve_image_url(access_token: str, device_id: str,
                 except Exception:
                     pass
 
-        # Also handle the estuary content URL pattern from asset_pointer
+        # Also try the estuary content URL directly
         if not download_url:
-            # Check if the asset_pointer itself contains an estuary URL we can try
+            estuary_url = f"{BASE_URL}/estuary/content?id={file_id}&p=fs&cid=1"
+            log.info(f"[conv] trying estuary URL directly: {estuary_url[:80]}...")
+            try:
+                resp3 = await session.get(estuary_url, headers=headers)
+                if resp3.status_code == 200 and len(resp3.content) > 1000:
+                    content_type = resp3.headers.get("content-type", "image/png")
+                    if "jpeg" in content_type or "jpg" in content_type:
+                        mime = "image/jpeg"
+                    elif "webp" in content_type:
+                        mime = "image/webp"
+                    else:
+                        mime = "image/png"
+                    img_bytes = resp3.content
+                    b64 = base64.b64encode(img_bytes).decode("ascii")
+                    data_uri = f"data:{mime};base64,{b64}"
+                    log.info(f"[conv] image from estuary: {len(img_bytes)} bytes, mime={mime}")
+                    return data_uri
+                else:
+                    log.warning(f"[conv] estuary returned {resp3.status_code}, len={len(resp3.content)}")
+            except Exception as e:
+                log.warning(f"[conv] estuary download error: {e}")
+
             log.warning(f"[conv] could not resolve download URL for file_id={file_id[:20]}...")
             return ""
 
@@ -503,6 +527,32 @@ async def _resolve_image_url(access_token: str, device_id: str,
         except Exception as e:
             log.warning(f"[conv] image download error: {e}")
             return download_url if download_url else ""
+
+
+def _unwrap_event(event: dict) -> tuple[dict, str]:
+    """Extract message and conversation_id from SSE event.
+    
+    Supports both old format:
+        {"message": {...}, "conversation_id": "..."}
+    And new patch/conduit format:
+        {"p": "...", "o": "add", "v": {"message": {...}, "conversation_id": "..."}}
+    """
+    msg = event.get("message")
+    cid = event.get("conversation_id", "")
+    
+    if msg:
+        return msg, cid
+    
+    # New patch format: message is nested inside "v"
+    v = event.get("v")
+    if isinstance(v, dict):
+        msg = v.get("message")
+        if not cid:
+            cid = v.get("conversation_id", "")
+        if msg:
+            return msg, cid
+    
+    return {}, cid
 
 
 def _message_signature(msg: dict) -> str:
@@ -606,11 +656,17 @@ async def parse_conversation_sse(
 
         events.append(event)
         cid = event.get("conversation_id", "")
+        if not cid:
+            v = event.get("v")
+            if isinstance(v, dict):
+                cid = v.get("conversation_id", "")
         if cid:
             conversation_id = cid
 
     for event in events:
-        msg = event.get("message")
+        msg, evt_cid = _unwrap_event(event)
+        if evt_cid:
+            conversation_id = evt_cid
         if not msg:
             continue
         if msg.get("id") == parent_msg_id:
@@ -620,7 +676,7 @@ async def parse_conversation_sse(
         if author_role in ("user", "system"):
             continue
 
-        event_conversation_id = event.get("conversation_id") or conversation_id
+        event_conversation_id = evt_cid or conversation_id
         found = await _extract_images_from_message(
             access_token,
             device_id,
@@ -813,7 +869,12 @@ async def _handle_image_via_conversation(
                         log.warning(f"[conv] json decode error: {e}, data: {data_str[:200]}")
                         continue
 
+                    # Extract cid from both old and new format
                     cid = event.get("conversation_id", "")
+                    if not cid:
+                        v = event.get("v")
+                        if isinstance(v, dict):
+                            cid = v.get("conversation_id", "")
                     if cid:
                         conversation_id = cid
 
@@ -834,7 +895,7 @@ async def _handle_image_via_conversation(
                         log.warning("[conv] moderation blocked in stream")
                         raise Exception("Content policy violation: moderation blocked")
 
-                    msg = event.get("message")
+                    msg, _ = _unwrap_event(event)
                     if not msg:
                         continue
 
@@ -916,7 +977,7 @@ async def _handle_image_via_conversation(
                     if evt.get("moderation_state") == "blocked":
                         error_events.append("moderation_blocked")
                     
-                    m = evt.get("message", {})
+                    m, _ = _unwrap_event(evt)
                     if not m:
                         continue
                     
