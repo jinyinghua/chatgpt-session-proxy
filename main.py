@@ -1624,100 +1624,157 @@ async def proxy_codex_responses(request: Request):
 
 MANAGER_HTML = """
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ChatGPT Session Proxy</title>
+<title>ChatGPT Session Proxy - Nexus</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    darkMode: 'class',
+    theme: {
+      extend: {
+        colors: {
+          neon: {
+            cyan: '#00f3ff',
+            pink: '#ff003c',
+            purple: '#bc13fe',
+            green: '#00ff66'
+          },
+          dark: {
+            bg: '#0a0a0f',
+            card: '#12121a',
+            border: '#2a2a35'
+          }
+        },
+        fontFamily: {
+          sans: ['Inter', 'system-ui', 'sans-serif'],
+          mono: ['Fira Code', 'monospace'],
+        }
+      }
+    }
+  }
+</script>
 <style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh;padding:1.5rem}
-.wrap{max-width:800px;margin:0 auto}
-h1{font-size:1.6rem;color:#00d4ff;margin-bottom:.3rem}
-.sub{color:#888;font-size:.85rem;margin-bottom:1.5rem}
-.card{background:#16213e;border:1px solid #0f3460;border-radius:10px;padding:1.2rem;margin-bottom:1rem}
-.card h2{font-size:1rem;color:#e94560;margin-bottom:.8rem}
-input,textarea{width:100%;background:#0a0a1a;color:#e0e0e0;border:1px solid #333;border-radius:6px;padding:.65rem .8rem;font-family:'Fira Code',monospace;font-size:.85rem}
-input:focus,textarea:focus{outline:none;border-color:#00d4ff}
-textarea{height:160px;resize:vertical}
-button{background:#e94560;color:#fff;border:none;border-radius:6px;padding:.6rem 1.5rem;font-size:.9rem;cursor:pointer;transition:.2s}
-button:hover{background:#ff6b6b}
-button.sm{padding:.4rem .9rem;font-size:.8rem;margin:0}
-button.ghost{background:transparent;border:1px solid #444;color:#aaa}
-button.ghost:hover{border-color:#888;color:#fff}
-.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
-.msg{padding:.8rem;border-radius:6px;margin-top:.8rem;font-size:.85rem}
-.msg.ok{background:#0d3320;border:1px solid #00c853;color:#69f0ae}
-.msg.err{background:#3d0000;border:1px solid #ff1744;color:#ff8a80}
-.msg.info{background:#0d1b3e;border:1px solid #2979ff;color:#82b1ff}
-.tbl{width:100%;border-collapse:collapse;margin-top:.5rem;font-size:.85rem}
-.tbl th{text-align:left;color:#888;font-weight:600;padding:.5rem .6rem;border-bottom:1px solid #222}
-.tbl td{padding:.5rem .6rem;border-bottom:1px solid #111;vertical-align:middle}
-.tbl tr:hover{background:rgba(255,255,255,.03)}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
-.dot.green{background:#00c853}.dot.red{background:#ff1744}
-.dot.yellow{background:#ffd600}.dot.gray{background:#555}
-.badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:.75rem}
-.badge.ok{background:#0d3320;color:#69f0ae}
-.badge.err{background:#3d0000;color:#ff8a80}
-.badge.off{background:#222;color:#888}
-#loginBox{display:flex;align-items:center;justify-content:center;min-height:70vh}
-#loginBox .card{max-width:360px;width:100%;text-align:center}
-#mainUI{display:none}
-.hdr{position:relative}
-.logout{position:absolute;top:0;right:0;background:transparent;border:1px solid #333;color:#888;font-size:.8rem;padding:.3rem .8rem;cursor:pointer;border-radius:4px}
-.logout:hover{color:#ff6b6b;border-color:#e94560}
-.grid2{display:grid;grid-template-columns:auto 1fr;gap:.3rem .8rem;font-size:.85rem}
-.grid2 span:first-child{color:#888;font-weight:600}
-.hint{color:#666;font-size:.8rem;margin-top:.3rem}
-a{color:#00d4ff}
-.actions button{margin-right:.4rem}
-@media(max-width:600px){.tbl{font-size:.78rem}.tbl td,.tbl th{padding:.4rem}}
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code&display=swap');
+  body { background-color: #0a0a0f; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+  .glass { background: rgba(18, 18, 26, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); }
+  .neon-border { position: relative; }
+  .neon-border::before { content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; background: linear-gradient(45deg, #00f3ff, #bc13fe, #ff003c); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; opacity: 0.5; transition: opacity 0.3s; }
+  .neon-border:hover::before { opacity: 1; }
+  
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0a0a0f; }
+  ::-webkit-scrollbar-thumb { background: #2a2a35; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #bc13fe; }
+
+  .glow-btn { transition: all 0.3s ease; }
+  .glow-btn:hover { box-shadow: 0 0 15px currentColor; transform: translateY(-1px); }
 </style>
 </head>
-<body>
-<div class="wrap">
-<div id="loginBox">
-<div class="card">
-<h2>LOCK Management Panel</h2>
-<p style="color:#888;font-size:.85rem;margin-bottom:1rem">Enter API Key to login</p>
-<input type="password" id="loginKey" placeholder="API Key" onkeydown="if(event.key==='Enter')doLogin()">
-<button onclick="doLogin()" style="width:100%;margin-top:.8rem">Login</button>
-<div id="loginMsg"></div>
+<body class="min-h-screen flex flex-col items-center p-4 md:p-8 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-900 via-dark-bg to-black">
+
+<!-- Login View -->
+<div id="loginBox" class="w-full max-w-md mt-20 flex flex-col items-center">
+  <div class="glass neon-border rounded-2xl p-8 w-full text-center shadow-2xl">
+    <div class="inline-block p-3 rounded-full bg-gradient-to-br from-neon-cyan to-neon-purple mb-4">
+      <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+    </div>
+    <h2 class="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan to-neon-purple mb-2">NEXUS PROXY</h2>
+    <p class="text-gray-400 text-sm mb-6">Enter your API Key to authenticate</p>
+    
+    <div class="relative mb-6">
+      <input type="password" id="loginKey" placeholder="API Key" class="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-3 text-white focus:outline-none focus:border-neon-cyan focus:ring-1 focus:ring-neon-cyan transition-all font-mono" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    
+    <button onclick="doLogin()" class="w-full bg-gradient-to-r from-neon-cyan to-neon-purple text-white font-bold py-3 rounded-lg glow-btn hover:from-neon-purple hover:to-neon-pink">
+      INITIALIZE
+    </button>
+    <div id="loginMsg" class="mt-4 text-sm"></div>
+  </div>
 </div>
+
+<!-- Main UI -->
+<div id="mainUI" class="w-full max-w-6xl hidden flex-col gap-6">
+  
+  <!-- Header -->
+  <header class="flex flex-col md:flex-row justify-between items-start md:items-center glass rounded-2xl p-6 neon-border">
+    <div>
+      <h1 class="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-neon-cyan via-neon-purple to-neon-pink">ChatGPT Session Proxy</h1>
+      <p class="text-gray-400 text-sm mt-1">Advanced Session Pool Management System</p>
+    </div>
+    <button onclick="doLogout()" class="mt-4 md:mt-0 px-4 py-2 rounded-lg border border-dark-border text-gray-300 hover:text-neon-pink hover:border-neon-pink transition-colors flex items-center gap-2">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+      Disconnect
+    </button>
+  </header>
+
+  <!-- Stats -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="glass rounded-xl p-5 border-l-4 border-neon-cyan flex flex-col">
+      <span class="text-gray-400 text-xs uppercase tracking-wider font-semibold">Device ID</span>
+      <span id="devId" class="text-lg font-mono text-white mt-1 break-all">-</span>
+    </div>
+    <div class="glass rounded-xl p-5 border-l-4 border-neon-purple flex flex-col">
+      <span class="text-gray-400 text-xs uppercase tracking-wider font-semibold">Total Sessions</span>
+      <span id="sessTotal" class="text-3xl font-bold text-white mt-1">-</span>
+    </div>
+    <div class="glass rounded-xl p-5 border-l-4 border-neon-green flex flex-col">
+      <span class="text-gray-400 text-xs uppercase tracking-wider font-semibold">Healthy Nodes</span>
+      <span id="sessHealthy" class="text-3xl font-bold text-neon-green mt-1">-</span>
+    </div>
+  </div>
+
+  <!-- Session List -->
+  <div class="glass rounded-2xl p-6 neon-border overflow-hidden flex flex-col">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="text-xl font-bold text-white flex items-center gap-2">
+        <svg class="w-5 h-5 text-neon-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 002-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+        Active Sessions
+      </h2>
+      <div class="flex gap-2">
+        <button onclick="loadStatus()" class="px-3 py-1.5 rounded bg-dark-bg border border-dark-border text-sm hover:border-neon-cyan hover:text-neon-cyan transition-colors flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          Sync
+        </button>
+        <button onclick="dlAll()" class="px-3 py-1.5 rounded bg-dark-bg border border-dark-border text-sm hover:border-neon-purple hover:text-neon-purple transition-colors flex items-center gap-1">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+          Backup All
+        </button>
+      </div>
+    </div>
+    
+    <div class="overflow-x-auto">
+      <div id="sessTable" class="w-full">
+        <p class="text-gray-500 italic py-4 text-center">Initializing matrix...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Session -->
+  <div class="glass rounded-2xl p-6 neon-border">
+    <h2 class="text-xl font-bold text-white mb-2 flex items-center gap-2">
+      <svg class="w-5 h-5 text-neon-pink" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+      Inject Session
+    </h2>
+    <p class="text-gray-400 text-sm mb-4">
+      Execute in <a href="https://chatgpt.com" target="_blank" class="text-neon-cyan hover:underline">chatgpt.com</a> console:
+      <code class="bg-dark-bg border border-dark-border px-2 py-1 rounded text-neon-purple font-mono text-xs ml-2 select-all">await fetch('/api/auth/session').then(r=>r.json()).then(j=>copy(JSON.stringify(j)))</code>
+    </p>
+    
+    <textarea id="newSess" rows="4" placeholder='{"accessToken":"eyJ...","sessionToken":"eyJ...","account":{"id":"..."},...}' class="w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-3 text-gray-300 focus:outline-none focus:border-neon-pink focus:ring-1 focus:ring-neon-pink transition-all font-mono text-sm resize-y"></textarea>
+    
+    <div class="mt-4 flex items-center justify-between">
+      <div id="addMsg" class="text-sm flex-1 mr-4"></div>
+      <button onclick="addSession()" class="bg-gradient-to-r from-neon-pink to-orange-500 text-white font-bold py-2 px-6 rounded-lg glow-btn hover:from-orange-500 hover:to-neon-pink whitespace-nowrap">
+        Inject Payload
+      </button>
+    </div>
+  </div>
+
 </div>
-<div id="mainUI">
-<div class="hdr">
-<h1>ChatGPT Session Proxy</h1>
-<p class="sub">Session Pool / Round-Robin / Auto-Refresh</p>
-<button class="logout" onclick="doLogout()">Logout</button>
-</div>
-<div class="card">
-<div class="grid2">
-<span>Device ID</span><span id="devId" style="word-break:break-all">-</span>
-<span>Sessions</span><span id="sessTotal">-</span>
-<span>Healthy</span><span id="sessHealthy">-</span>
-</div>
-</div>
-<div class="card">
-<h2>Session List</h2>
-<div id="sessTable"><p style="color:#888">Loading...</p></div>
-<div class="row" style="margin-top:.8rem">
-<button class="sm ghost" onclick="loadStatus()">Refresh</button>
-</div>
-</div>
-<div class="card">
-<h2>Add Session</h2>
-<p class="hint" style="margin-bottom:.6rem">On <a href="https://chatgpt.com" target="_blank">chatgpt.com</a> console run
-<code style="background:#1a1a3e;padding:1px 5px;border-radius:3px;color:#00d4ff;font-size:.8rem">await fetch('/api/auth/session').then(r=>r.json()).then(j=>copy(JSON.stringify(j)))</code></p>
-<textarea id="newSess" placeholder='{"accessToken":"eyJ...","sessionToken":"eyJ...","account":{"id":"..."},...}'></textarea>
-<div class="row" style="margin-top:.6rem">
-<button class="sm" onclick="addSession()">Add</button>
-</div>
-<div id="addMsg"></div>
-</div>
-</div>
-</div>
+
 <script>
 (function() {
   const K = '_pkey';
@@ -1729,45 +1786,42 @@ a{color:#00d4ff}
     'Content-Type': 'application/json'
   });
 
+  const msgHtml = (msg, type) => {
+    const colors = {
+      err: 'text-neon-pink bg-red-900/20 border-red-900/50',
+      ok: 'text-neon-green bg-green-900/20 border-green-900/50',
+      info: 'text-neon-cyan bg-blue-900/20 border-blue-900/50'
+    };
+    return `<div class="px-3 py-2 rounded border ${colors[type]}">${msg}</div>`;
+  };
+
   window.doLogin = async function() {
     const k = document.getElementById('loginKey').value.trim();
     const el = document.getElementById('loginMsg');
-    if (!k) {
-      el.innerHTML = '<div class="msg err">Please enter key</div>';
-      return;
-    }
-    el.innerHTML = '<div class="msg info">Logging in...</div>';
+    if (!k) { el.innerHTML = msgHtml('API Key required', 'err'); return; }
+    
+    el.innerHTML = msgHtml('Authenticating...', 'info');
     try {
       const r = await fetch('/auth/login-check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ key: k })
       });
-      if (r.status === 401) {
-        el.innerHTML = '<div class="msg err">Invalid API Key</div>';
-        return;
-      }
-      if (!r.ok) {
-        const txt = await r.text();
-        el.innerHTML = `<div class="msg err">Error: ${r.status} ${txt}</div>`;
-        return;
-      }
+      if (r.status === 401) { el.innerHTML = msgHtml('Access Denied', 'err'); return; }
+      if (!r.ok) { const txt = await r.text(); el.innerHTML = msgHtml(`Error ${r.status}: ${txt}`, 'err'); return; }
       setKey(k);
       showMain();
     } catch (e) {
-      el.innerHTML = `<div class="msg err">Connection failed: ${e.message}</div>`;
-      console.error(e);
+      el.innerHTML = msgHtml(`Connection failed: ${e.message}`, 'err');
     }
   };
 
-  window.doLogout = function() {
-    clearKey();
-    location.reload();
-  };
+  window.doLogout = function() { clearKey(); location.reload(); };
 
   function showMain() {
-    document.getElementById('loginBox').style.display = 'none';
-    document.getElementById('mainUI').style.display = 'block';
+    document.getElementById('loginBox').classList.add('hidden');
+    document.getElementById('mainUI').classList.remove('hidden');
+    document.getElementById('mainUI').classList.add('flex');
     loadStatus();
   }
 
@@ -1777,90 +1831,152 @@ a{color:#00d4ff}
       const r = await fetch('/auth/status', { headers: hdrs() });
       if (r.status === 401) { doLogout(); return; }
       const d = await r.json();
+      
       document.getElementById('devId').textContent = d.device_id || '-';
-      document.getElementById('sessTotal').textContent = d.total || 0;
-      document.getElementById('sessHealthy').textContent = d.healthy || 0;
+      
+      animateValue('sessTotal', parseInt(document.getElementById('sessTotal').textContent)||0, d.total||0, 500);
+      animateValue('sessHealthy', parseInt(document.getElementById('sessHealthy').textContent)||0, d.healthy||0, 500);
       
       if (!d.sessions || !d.sessions.length) {
-        el.innerHTML = '<p style="color:#888;padding:1rem">No sessions in pool. Add one below.</p>';
+        el.innerHTML = '<div class="text-center py-8 text-gray-500 border border-dashed border-dark-border rounded-lg">No active sessions found. Inject a payload below.</div>';
         return;
       }
 
-      let h = '<table class="tbl"><tr><th>Status</th><th>SID</th><th>Account / Email</th><th>Expires</th><th>Error</th><th>Actions</th></tr>';
+      let h = `
+      <table class="w-full text-left border-collapse hidden md:table">
+        <thead>
+          <tr class="text-gray-400 text-xs uppercase tracking-wider border-b border-dark-border">
+            <th class="pb-3 font-medium">Status</th>
+            <th class="pb-3 font-medium">SID</th>
+            <th class="pb-3 font-medium">Identity</th>
+            <th class="pb-3 font-medium">Expires</th>
+            <th class="pb-3 font-medium">Diagnostics</th>
+            <th class="pb-3 font-medium text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="text-sm divide-y divide-dark-border">`;
+      
+      let mh = `<div class="md:hidden flex flex-col gap-4">`;
+
       for (const s of d.sessions) {
         const dis = s.disabled, exp = s.is_expired, hlt = s.is_healthy && !dis;
-        let dot, txt, bCls;
-        if (dis) { dot = 'gray'; txt = 'Disabled'; bCls = 'off'; }
-        else if (!hlt) { dot = 'red'; txt = 'Error'; bCls = 'err'; }
-        else if (exp) { dot = 'yellow'; txt = 'Expired'; bCls = 'err'; }
-        else { dot = 'green'; txt = 'OK'; bCls = 'ok'; }
-
-        const ex = s.expires_at ? new Date(s.expires_at * 1000).toLocaleTimeString() : '-';
-        const er = s.last_error ? s.last_error.substring(0, 30) : '-';
-        const tb = dis 
-          ? `<button class="sm ghost" onclick="togS('${s.sid}',false)">Enable</button>`
-          : `<button class="sm ghost" onclick="togS('${s.sid}',true)">Disable</button>`;
         
-        h += `<tr>
-          <td><span class="dot ${dot}"></span><span class="badge ${bCls}">${txt}</span></td>
-          <td><code>${s.sid}</code></td>
-          <td><div>${s.account_id ? s.account_id.substring(0, 8) + "..." : "-"}</div><div style="font-size:0.75rem;color:#888">${s.email || ""}</div></td>
-          <td>${ex}</td>
-          <td title="${s.last_error || ''}">${er}</td>
-          <td class="actions">${tb}<button class="sm ghost" onclick="dlS('${s.sid}')">DL</button><button class="sm ghost" onclick="rmS('${s.sid}')">Del</button></td>
+        let statusColor, statusText, statusDot;
+        if (dis) { statusColor = 'text-gray-400 bg-gray-900 border-gray-700'; statusText = 'OFFLINE'; statusDot = 'bg-gray-500'; }
+        else if (!hlt) { statusColor = 'text-neon-pink bg-red-900/30 border-red-900'; statusText = 'ERROR'; statusDot = 'bg-neon-pink shadow-[0_0_8px_#ff003c]'; }
+        else if (exp) { statusColor = 'text-yellow-400 bg-yellow-900/30 border-yellow-900'; statusText = 'EXPIRED'; statusDot = 'bg-yellow-400 shadow-[0_0_8px_#facc15]'; }
+        else { statusColor = 'text-neon-green bg-green-900/30 border-green-900'; statusText = 'ONLINE'; statusDot = 'bg-neon-green shadow-[0_0_8px_#00ff66]'; }
+
+        const ex = s.expires_at ? new Date(s.expires_at * 1000).toLocaleString(undefined, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '-';
+        const er = s.last_error ? s.last_error.substring(0, 40) + (s.last_error.length>40?'...':'') : '-';
+        const acc = s.account_id ? s.account_id.substring(0, 8) + "..." : "Unknown";
+        
+        const togBtn = dis 
+          ? `<button class="text-neon-cyan hover:text-white hover:bg-neon-cyan/20 px-2 py-1 rounded transition-colors" onclick="togS('${s.sid}',false)" title="Enable"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></button>`
+          : `<button class="text-yellow-500 hover:text-white hover:bg-yellow-500/20 px-2 py-1 rounded transition-colors" onclick="togS('${s.sid}',true)" title="Disable"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg></button>`;
+
+        const actions = `
+          <div class="flex items-center justify-end gap-1">
+            ${togBtn}
+            <button class="text-blue-400 hover:text-white hover:bg-blue-400/20 px-2 py-1 rounded transition-colors" onclick="dlS('${s.sid}')" title="Download"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg></button>
+            <button class="text-neon-pink hover:text-white hover:bg-neon-pink/20 px-2 py-1 rounded transition-colors" onclick="rmS('${s.sid}')" title="Delete"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+          </div>
+        `;
+
+        h += `
+        <tr class="hover:bg-white/[0.02] transition-colors group">
+          <td class="py-3">
+            <div class="flex items-center gap-2">
+              <div class="w-2 h-2 rounded-full ${statusDot}"></div>
+              <span class="text-[10px] font-bold px-2 py-0.5 rounded border ${statusColor}">${statusText}</span>
+            </div>
+          </td>
+          <td class="py-3 font-mono text-gray-300">${s.sid}</td>
+          <td class="py-3">
+            <div class="text-gray-200">${acc}</div>
+            <div class="text-xs text-gray-500">${s.email || "N/A"}</div>
+          </td>
+          <td class="py-3 text-gray-400">${ex}</td>
+          <td class="py-3 text-gray-400 text-xs max-w-[150px] truncate" title="${s.last_error || ''}">${er}</td>
+          <td class="py-3">${actions}</td>
         </tr>`;
+
+        mh += `
+        <div class="bg-dark-bg border border-dark-border rounded-lg p-4 relative overflow-hidden">
+          <div class="absolute top-0 left-0 w-1 h-full ${statusDot.split(' ')[0]}"></div>
+          <div class="flex justify-between items-start mb-2 pl-2">
+            <div>
+              <span class="text-[10px] font-bold px-2 py-0.5 rounded border ${statusColor}">${statusText}</span>
+              <div class="font-mono text-gray-300 mt-2 text-sm">${s.sid}</div>
+            </div>
+            ${actions}
+          </div>
+          <div class="grid grid-cols-2 gap-2 mt-3 pl-2 text-xs">
+            <div><span class="text-gray-500 block">Identity</span><span class="text-gray-300">${acc}</span></div>
+            <div><span class="text-gray-500 block">Email</span><span class="text-gray-300 truncate block">${s.email || "N/A"}</span></div>
+            <div><span class="text-gray-500 block">Expires</span><span class="text-gray-400">${ex}</span></div>
+            <div><span class="text-gray-500 block">Error</span><span class="text-gray-400 truncate block" title="${s.last_error||''}">${er}</span></div>
+          </div>
+        </div>`;
       }
-      h += '</table>';
-      h += '<div style="margin-top:12px;text-align:right"><button class="sm ghost" onclick="dlAll()">📦 Download All (ZIP)</button></div>';
-      el.innerHTML = h;
+      h += '</tbody></table>';
+      mh += '</div>';
+      
+      el.innerHTML = h + mh;
     } catch (e) {
-      el.innerHTML = `<div class="msg err">Failed to load status: ${e.message}</div>`;
+      el.innerHTML = msgHtml(`Failed to sync matrix: ${e.message}`, 'err');
     }
   };
+
+  function animateValue(id, start, end, duration) {
+    if (start === end) { document.getElementById(id).textContent = end; return; }
+    let startTimestamp = null;
+    const step = (timestamp) => {
+      if (!startTimestamp) startTimestamp = timestamp;
+      const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+      document.getElementById(id).textContent = Math.floor(progress * (end - start) + start);
+      if (progress < 1) window.requestAnimationFrame(step);
+    };
+    window.requestAnimationFrame(step);
+  }
 
   window.addSession = async function() {
     const v = document.getElementById('newSess').value.trim();
     const el = document.getElementById('addMsg');
-    if (!v) { el.innerHTML = '<div class="msg err">Please paste JSON</div>'; return; }
+    if (!v) { el.innerHTML = msgHtml('Payload empty', 'err'); return; }
+    
+    el.innerHTML = msgHtml('Injecting...', 'info');
     try {
       const r = await fetch('/auth/session', { method: 'POST', headers: hdrs(), body: v });
       if (r.status === 401) { doLogout(); return; }
       const d = await r.json();
       if (r.ok) {
-        el.innerHTML = `<div class="msg ok">${d.message}</div>`;
+        el.innerHTML = msgHtml(d.message || 'Injection successful', 'ok');
         document.getElementById('newSess').value = '';
         loadStatus();
+        setTimeout(() => { el.innerHTML = ''; }, 3000);
       } else {
-        el.innerHTML = `<div class="msg err">${d.detail || JSON.stringify(d)}</div>`;
+        el.innerHTML = msgHtml(d.detail || JSON.stringify(d), 'err');
       }
-    } catch (e) { el.innerHTML = `<div class="msg err">${e.message}</div>`; }
+    } catch (e) { el.innerHTML = msgHtml(e.message, 'err'); }
   };
 
   window.rmS = async function(sid) {
-    if (!confirm(`Delete session ${sid}?`)) return;
+    if (!confirm(`Purge session ${sid}?`)) return;
     await fetch(`/auth/session/${sid}/remove`, { method: 'POST', headers: hdrs() });
     loadStatus();
   };
-
   
-  window.dlS = function(sid) {
-    window.open(`/auth/session/${sid}/download`, '_blank');
-  };
-
-  window.dlAll = function() {
-    window.open('/auth/sessions/download', '_blank');
-  };
+  window.dlS = function(sid) { window.open(`/auth/session/${sid}/download`, '_blank'); };
+  window.dlAll = function() { window.open('/auth/sessions/download', '_blank'); };
 
   window.togS = async function(sid, dis) {
     await fetch(`/auth/session/${sid}/toggle`, { 
-      method: 'POST', 
-      headers: hdrs(), 
-      body: JSON.stringify({ disabled: dis }) 
+      method: 'POST', headers: hdrs(), body: JSON.stringify({ disabled: dis }) 
     });
     loadStatus();
   };
 
-  // Init
   if (getKey()) showMain();
 })();
 </script>
