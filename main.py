@@ -194,8 +194,7 @@ async def get_sentinel_tokens(access_token: str, device_id: str) -> tuple[str, s
             raise Exception(f"chat-requirements failed: {resp.status_code} {resp.text}")
 
         data = resp.json()
-        if "/f/conversation" in str(inspect.stack()): # simplified check
-             log.info(f"[sentinel] requirements: {json.dumps(data)}")
+        # log.info(f"[sentinel] requirements: {json.dumps(data)}")
         chat_token = data.get("token", "")
         pow_info = data.get("proofofwork", {})
         proof_token = ""
